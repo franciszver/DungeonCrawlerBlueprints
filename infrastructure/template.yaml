@@ -1,0 +1,243 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: DungeonCrawlerBlueprints - AI-powered room detection service
+
+Globals:
+  Function:
+    Timeout: 30
+    Runtime: python3.12
+    MemorySize: 512
+    Environment:
+      Variables:
+        DYNAMODB_TABLE_NAME: !Ref JobsTable
+        S3_BUCKET_NAME: !Ref BlueprintsBucket
+        SECRETS_MANAGER_SECRET_NAME: dungeoncrawler/openrouter-api-key
+        OPENROUTER_MODEL: openai/gpt-4o
+
+Resources:
+  # API Gateway
+  BlueprintsApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: DungeonCrawlerBlueprints-API
+      StageName: dev
+      Cors:
+        AllowMethods: "'GET,POST,OPTIONS'"
+        AllowHeaders: "'Content-Type,x-api-key'"
+        AllowOrigin: "'*'"
+      Auth:
+        ApiKeyRequired: true
+
+  # API Key
+  ApiKey:
+    Type: AWS::ApiGateway::ApiKey
+    Properties:
+      Name: DungeonCrawlerBlueprints-APIKey
+      Description: API Key for DungeonCrawlerBlueprints
+      Enabled: true
+
+  # Usage Plan - Commented out for initial deployment
+  # Can be added manually after stack creation if needed
+  # UsagePlan:
+  #   Type: AWS::ApiGateway::UsagePlan
+  #   DependsOn: BlueprintsApi
+  #   Properties:
+  #     UsagePlanName: DungeonCrawlerBlueprints-UsagePlan
+  #     Description: Usage plan for DungeonCrawlerBlueprints API
+  #     ApiStages:
+  #       - ApiId: !Ref BlueprintsApi
+  #         Stage: dev
+  #     Throttle:
+  #       BurstLimit: 10
+  #       RateLimit: 5
+  #     Quota:
+  #       Limit: 10000
+  #       Period: MONTH
+  #
+  # UsagePlanKey:
+  #   Type: AWS::ApiGateway::UsagePlanKey
+  #   Properties:
+  #     KeyId: !Ref ApiKey
+  #     KeyType: API_KEY
+  #     UsagePlanId: !Ref UsagePlan
+
+  # S3 Bucket for Blueprints
+  BlueprintsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${AWS::StackName}-blueprints-${AWS::AccountId}'
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteOldBlueprints
+            Status: Enabled
+            ExpirationInDays: 30
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  # DynamoDB Table
+  JobsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: DungeonCrawlerBlueprints-Jobs
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: job_id
+          AttributeType: S
+        - AttributeName: blueprint_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: job_id
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: BlueprintIdIndex
+          KeySchema:
+            - AttributeName: blueprint_id
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+
+  # Secrets Manager Secret for OpenRouter API Key
+  # Note: Secret is created manually via scripts/setup-secret.ps1
+  # Reference: arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:dungeoncrawler/openrouter-api-key-*
+
+  # Lambda Functions
+  UploadFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: DungeonCrawlerBlueprints-Upload
+      CodeUri: ../backend/functions/upload
+      Handler: handler.lambda_handler
+      Events:
+        UploadApi:
+          Type: Api
+          Properties:
+            RestApiId: !Ref BlueprintsApi
+            Path: /upload
+            Method: post
+      Policies:
+        - S3WritePolicy:
+            BucketName: !Ref BlueprintsBucket
+        - DynamoDBCrudPolicy:
+            TableName: !Ref JobsTable
+      Environment:
+        Variables:
+          S3_BUCKET_NAME: !Ref BlueprintsBucket
+          DYNAMODB_TABLE_NAME: !Ref JobsTable
+
+  DetectFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: DungeonCrawlerBlueprints-Detect
+      CodeUri: ../backend
+      Handler: functions.detect.handler.lambda_handler
+      Timeout: 30
+      MemorySize: 1024
+      Events:
+        DetectApi:
+          Type: Api
+          Properties:
+            RestApiId: !Ref BlueprintsApi
+            Path: /detect
+            Method: post
+            Auth:
+              ApiKeyRequired: true
+      Policies:
+        - S3ReadPolicy:
+            BucketName: !Ref BlueprintsBucket
+        - DynamoDBCrudPolicy:
+            TableName: !Ref JobsTable
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:dungeoncrawler/openrouter-api-key-*'
+
+  ResultsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: DungeonCrawlerBlueprints-Results
+      CodeUri: ../backend
+      Handler: functions.results.handler.lambda_handler
+      Events:
+        ResultsApi:
+          Type: Api
+          Properties:
+            RestApiId: !Ref BlueprintsApi
+            Path: /results/{id}
+            Method: get
+            Auth:
+              ApiKeyRequired: true
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref JobsTable
+
+  ExportFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: DungeonCrawlerBlueprints-Export
+      CodeUri: ../backend
+      Handler: functions.export.handler.lambda_handler
+      Events:
+        ExportApi:
+          Type: Api
+          Properties:
+            RestApiId: !Ref BlueprintsApi
+            Path: /export/{id}
+            Method: get
+            Auth:
+              ApiKeyRequired: true
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref JobsTable
+
+  HealthFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: DungeonCrawlerBlueprints-Health
+      CodeUri: ../backend
+      Handler: functions.health.handler.lambda_handler
+      Events:
+        HealthApi:
+          Type: Api
+          Properties:
+            RestApiId: !Ref BlueprintsApi
+            Path: /health
+            Method: get
+            Auth:
+              ApiKeyRequired: true
+
+Outputs:
+  ApiUrl:
+    Description: API Gateway endpoint URL
+    Value: !Sub 'https://${BlueprintsApi}.execute-api.${AWS::Region}.amazonaws.com/dev'
+    Export:
+      Name: !Sub '${AWS::StackName}-ApiUrl'
+
+  ApiKeyId:
+    Description: API Key ID
+    Value: !Ref ApiKey
+    Export:
+      Name: !Sub '${AWS::StackName}-ApiKeyId'
+
+  S3BucketName:
+    Description: S3 Bucket for blueprints
+    Value: !Ref BlueprintsBucket
+    Export:
+      Name: !Sub '${AWS::StackName}-S3Bucket'
+
+  DynamoDBTableName:
+    Description: DynamoDB Table name
+    Value: !Ref JobsTable
+    Export:
+      Name: !Sub '${AWS::StackName}-DynamoDBTable'
+
+  SecretArn:
+    Description: Secrets Manager Secret ARN
+    Value: !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:dungeoncrawler/openrouter-api-key-*'
+    Export:
+      Name: !Sub '${AWS::StackName}-SecretArn'
+
