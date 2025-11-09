@@ -9,9 +9,11 @@ from decimal import Decimal
 
 # Add shared module to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../shared'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../..'))
 
 from room_detector import process_blueprint_image
 from config import S3_BUCKET_NAME, DYNAMODB_TABLE_NAME
+from cors import cors_response, handle_options_request
 
 s3_client = boto3.client('s3')
 dynamodb = boto3.resource('dynamodb')
@@ -41,6 +43,10 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         }
     }
     """
+    # Handle OPTIONS preflight request
+    if event.get('httpMethod') == 'OPTIONS' or event.get('requestContext', {}).get('http', {}).get('method') == 'OPTIONS':
+        return handle_options_request()
+    
     import logging
     logger = logging.getLogger()
     logger.setLevel(logging.INFO)

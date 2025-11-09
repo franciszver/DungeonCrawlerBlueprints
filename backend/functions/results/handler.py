@@ -7,8 +7,10 @@ from typing import Dict, Any
 
 # Add shared module to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../shared'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../..'))
 
 from config import DYNAMODB_TABLE_NAME
+from cors import cors_response, handle_options_request
 
 dynamodb = boto3.resource('dynamodb')
 
@@ -24,6 +26,10 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         }
     }
     """
+    # Handle OPTIONS preflight request
+    if event.get('httpMethod') == 'OPTIONS' or event.get('requestContext', {}).get('http', {}).get('method') == 'OPTIONS':
+        return handle_options_request()
+    
     try:
         job_id = event.get('pathParameters', {}).get('id')
         

@@ -159,14 +159,6 @@ Resources:
             Method: post
             Auth:
               ApiKeyRequired: true
-        UploadApiOptions:
-          Type: Api
-          Properties:
-            RestApiId: !Ref BlueprintsApi
-            Path: /upload
-            Method: options
-            Auth:
-              ApiKeyRequired: false
       Policies:
         - S3WritePolicy:
             BucketName: !Ref BlueprintsBucket
@@ -287,12 +279,6 @@ Resources:
             Method: post
             Auth:
               ApiKeyRequired: true
-        ExtendApiOptions:
-          Type: Api
-          Properties:
-            RestApiId: !Ref BlueprintsApi
-            Path: /extend/{id}
-            Method: options
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref JobsTable
