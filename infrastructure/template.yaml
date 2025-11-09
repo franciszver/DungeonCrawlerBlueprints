@@ -4,7 +4,7 @@ Description: DungeonCrawlerBlueprints - AI-powered room detection service
 
 Globals:
   Function:
-    Timeout: 30
+    Timeout: 120
     Runtime: python3.13
     MemorySize: 512
     Environment:
@@ -14,12 +14,12 @@ Globals:
         SECRETS_MANAGER_SECRET_NAME: dungeoncrawler/openrouter-api-key
         OPENROUTER_MODEL: openai/gpt-4o
         # Multi-Model Detection
-        CONFIDENCE_THRESHOLD: '0.7'
+        CONFIDENCE_THRESHOLD: '0.75'
         MAX_RETRY_ATTEMPTS: '2'
         # Detection Features
         ENABLE_POLYGON_DETECTION: 'true'
         ENABLE_DOOR_DETECTION: 'true'
-        FEW_SHOT_EXAMPLE_COUNT: '3'
+        FEW_SHOT_EXAMPLE_COUNT: '5'
         # Canvas Limits
         MAX_CANVAS_WIDTH: '2000'
         MAX_CANVAS_HEIGHT: '2000'
@@ -175,7 +175,7 @@ Resources:
       FunctionName: DungeonCrawlerBlueprints-Detect
       CodeUri: ../backend
       Handler: functions.detect.handler.lambda_handler
-      Timeout: 30
+      Timeout: 120
       MemorySize: 1024
       Layers:
         - !Ref DependenciesLayer
@@ -199,6 +199,10 @@ Resources:
               Action:
                 - secretsmanager:GetSecretValue
               Resource: !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:dungeoncrawler/openrouter-api-key-*'
+            - Effect: Allow
+              Action:
+                - lambda:InvokeFunction
+              Resource: !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:DungeonCrawlerBlueprints-Detect'
 
   ResultsFunction:
     Type: AWS::Serverless::Function

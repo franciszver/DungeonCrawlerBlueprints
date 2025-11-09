@@ -142,13 +142,14 @@ export default function BlueprintUpload({ onUploadComplete, onError, onFileSelec
               ></path>
             </svg>
           )}
-          {uploading ? 'Analyzing Blueprint (15-20s)...' : 'Upload Blueprint'}
+          {uploading ? 'Analyzing Blueprint (30-90s)...' : 'Upload Blueprint'}
         </button>
         
         {uploading && (
           <div className="text-center text-sm text-gray-600">
             <p>Detecting rooms with AI vision models...</p>
-            <p className="text-xs text-gray-500 mt-1">Using 5 training examples for maximum accuracy</p>
+            <p className="text-xs text-gray-500 mt-1">Using 5 training examples + validation for maximum accuracy</p>
+            <p className="text-xs text-gray-400 mt-1">Complex blueprints may take up to 90 seconds</p>
           </div>
         )}
       </form>

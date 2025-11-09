@@ -4,6 +4,7 @@ import boto3
 import sys
 import os
 from typing import Dict, Any
+from decimal import Decimal
 
 # Add shared module to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../shared'))
@@ -13,6 +14,14 @@ from config import DYNAMODB_TABLE_NAME
 from cors import cors_response, handle_options_request
 
 dynamodb = boto3.resource('dynamodb')
+
+
+class DecimalEncoder(json.JSONEncoder):
+    """JSON encoder that converts Decimal to float."""
+    def default(self, obj):
+        if isinstance(obj, Decimal):
+            return float(obj)
+        return super(DecimalEncoder, self).default(obj)
 
 
 def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
@@ -91,7 +100,7 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 'Content-Type': 'application/json',
                 'Access-Control-Allow-Origin': '*'
             },
-            'body': json.dumps(result)
+            'body': json.dumps(result, cls=DecimalEncoder)
         }
         
     except Exception as e:
@@ -104,6 +113,6 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             'body': json.dumps({
                 'error': str(e),
                 'error_code': 'RESULTS_ERROR'
-            })
+            }, cls=DecimalEncoder)
         }
 

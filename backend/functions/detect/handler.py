@@ -1,4 +1,4 @@
-"""Lambda handler for room detection."""
+"""Lambda handler for room detection with async processing."""
 import json
 import boto3
 import sys
@@ -17,6 +17,11 @@ from cors import cors_response, handle_options_request
 
 s3_client = boto3.client('s3')
 dynamodb = boto3.resource('dynamodb')
+lambda_client = boto3.client('lambda')
+
+import logging
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
 
 
 def convert_floats_to_decimal(obj):
@@ -31,25 +36,112 @@ def convert_floats_to_decimal(obj):
         return obj
 
 
+def process_detection_sync(blueprint_id: str, job_id: str, s3_key: str):
+    """
+    Synchronously process detection (called by async invocation).
+    """
+    table = dynamodb.Table(DYNAMODB_TABLE_NAME)
+    
+    try:
+        # Update job status
+        table.update_item(
+            Key={'job_id': job_id},
+            UpdateExpression='SET #status = :status, updated_at = :updated',
+            ExpressionAttributeNames={'#status': 'status'},
+            ExpressionAttributeValues={
+                ':status': 'processing',
+                ':updated': datetime.utcnow().isoformat()
+            }
+        )
+        
+        # Download image from S3
+        response = s3_client.get_object(Bucket=S3_BUCKET_NAME, Key=s3_key)
+        image_data = response['Body'].read()
+        
+        # Determine image format
+        file_ext = s3_key.split('.')[-1].lower()
+        image_format = 'png' if file_ext == 'png' else 'jpg'
+        
+        # Process image
+        logger.info(f"Starting detection for job {job_id}")
+        detection_result = process_blueprint_image(image_data, image_format)
+        logger.info(f"Detection completed for job {job_id}: success={detection_result.get('success')}")
+        
+        # Store results
+        if detection_result.get('success'):
+            # Convert floats to Decimal for DynamoDB
+            rooms = convert_floats_to_decimal(detection_result.get('rooms', []))
+            doors = convert_floats_to_decimal(detection_result.get('doors', []))
+            metadata = convert_floats_to_decimal(detection_result.get('metadata', {}))
+            confidence = convert_floats_to_decimal(detection_result.get('confidence', 0.0))
+            
+            table.update_item(
+                Key={'job_id': job_id},
+                UpdateExpression='SET #status = :status, results = :results, doors = :doors, metadata = :metadata, confidence = :confidence, updated_at = :updated',
+                ExpressionAttributeNames={'#status': 'status'},
+                ExpressionAttributeValues={
+                    ':status': 'completed',
+                    ':results': rooms,
+                    ':doors': doors,
+                    ':metadata': metadata,
+                    ':confidence': confidence,
+                    ':updated': datetime.utcnow().isoformat()
+                }
+            )
+        else:
+            table.update_item(
+                Key={'job_id': job_id},
+                UpdateExpression='SET #status = :status, #error = :error, error_code = :error_code, updated_at = :updated',
+                ExpressionAttributeNames={
+                    '#status': 'status',
+                    '#error': 'error'
+                },
+                ExpressionAttributeValues={
+                    ':status': 'failed',
+                    ':error': detection_result.get('error', 'Unknown error'),
+                    ':error_code': detection_result.get('error_code', 'UNKNOWN'),
+                    ':updated': datetime.utcnow().isoformat()
+                }
+            )
+            
+    except Exception as e:
+        import traceback
+        error_trace = traceback.format_exc()
+        logger.error(f"Detection error for job {job_id}: {str(e)}")
+        logger.error(f"Traceback: {error_trace}")
+        
+        table.update_item(
+            Key={'job_id': job_id},
+            UpdateExpression='SET #status = :status, #error = :error, error_code = :error_code, updated_at = :updated',
+            ExpressionAttributeNames={
+                '#status': 'status',
+                '#error': 'error'
+            },
+            ExpressionAttributeValues={
+                ':status': 'failed',
+                ':error': str(e),
+                ':error_code': 'DETECTION_ERROR',
+                ':updated': datetime.utcnow().isoformat()
+            }
+        )
+
+
 def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     """
-    Handle room detection request.
+    Handle room detection request with async processing.
     
     Expected event:
     {
         "body": {
             "blueprint_id": "string",
-            "job_id": "string (optional)"
+            "job_id": "string (optional)",
+            "async": true/false (optional, default true)
         }
     }
     """
     # Handle OPTIONS preflight request
     if event.get('httpMethod') == 'OPTIONS' or event.get('requestContext', {}).get('http', {}).get('method') == 'OPTIONS':
         return handle_options_request()
-    
-    import logging
-    logger = logging.getLogger()
-    logger.setLevel(logging.INFO)
     
     try:
         logger.info(f"Received event: {json.dumps(event)}")
@@ -62,7 +154,18 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         
         blueprint_id = body.get('blueprint_id')
         job_id = body.get('job_id')
+        is_async = body.get('async', True)  # Default to async
         
+        # Check if this is an async invocation (no HTTP method means async)
+        is_async_invocation = 'httpMethod' not in event and 'requestContext' not in event
+        
+        if is_async_invocation:
+            # This is an async invocation - process synchronously
+            logger.info(f"Processing async invocation for job {job_id}")
+            process_detection_sync(blueprint_id, job_id, body.get('s3_key'))
+            return {'statusCode': 200, 'body': json.dumps({'status': 'processed'})}
+        
+        # This is an HTTP request
         if not blueprint_id:
             return {
                 'statusCode': 400,
@@ -91,14 +194,12 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         
         if not job_id:
             # Find latest job for blueprint_id
-            # Note: For MVP, we'll use a simple scan (can optimize with GSI later)
             response = table.scan(
                 FilterExpression='blueprint_id = :bid',
                 ExpressionAttributeValues={':bid': blueprint_id}
             )
             items = response.get('Items', [])
             if items:
-                # Get most recent
                 job = max(items, key=lambda x: x.get('created_at', ''))
                 job_id = job['job_id']
             else:
@@ -132,67 +233,44 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 })
             }
         
-        # Update job status
-        table.update_item(
-            Key={'job_id': job_id},
-            UpdateExpression='SET #status = :status, updated_at = :updated',
-            ExpressionAttributeNames={'#status': 'status'},
-            ExpressionAttributeValues={
-                ':status': 'processing',
-                ':updated': datetime.utcnow().isoformat()
-            }
-        )
-        
-        # Download image from S3
-        response = s3_client.get_object(Bucket=S3_BUCKET_NAME, Key=s3_key)
-        image_data = response['Body'].read()
-        
-        # Determine image format
-        file_ext = s3_key.split('.')[-1].lower()
-        image_format = 'png' if file_ext == 'png' else 'jpg'
-        
-        # Process image
-        detection_result = process_blueprint_image(image_data, image_format)
-        
-        # Store results
-        if detection_result.get('success'):
-            # Convert floats to Decimal for DynamoDB
-            rooms = convert_floats_to_decimal(detection_result.get('rooms', []))
-            doors = convert_floats_to_decimal(detection_result.get('doors', []))
-            metadata = convert_floats_to_decimal(detection_result.get('metadata', {}))
-            confidence = convert_floats_to_decimal(detection_result.get('confidence', 0.0))
+        if is_async:
+            # Invoke Lambda asynchronously
+            logger.info(f"Invoking async detection for job {job_id}")
+            lambda_client.invoke(
+                FunctionName=context.function_name,
+                InvocationType='Event',  # Async invocation
+                Payload=json.dumps({
+                    'body': {
+                        'blueprint_id': blueprint_id,
+                        'job_id': job_id,
+                        's3_key': s3_key
+                    }
+                })
+            )
             
-            table.update_item(
-                Key={'job_id': job_id},
-                UpdateExpression='SET #status = :status, results = :results, doors = :doors, metadata = :metadata, confidence = :confidence, updated_at = :updated',
-                ExpressionAttributeNames={'#status': 'status'},
-                ExpressionAttributeValues={
-                    ':status': 'completed',
-                    ':results': rooms,
-                    ':doors': doors,
-                    ':metadata': metadata,
-                    ':confidence': confidence,
-                    ':updated': datetime.utcnow().isoformat()
-                }
-            )
-        else:
-            table.update_item(
-                Key={'job_id': job_id},
-                UpdateExpression='SET #status = :status, #error = :error, error_code = :error_code, updated_at = :updated',
-                ExpressionAttributeNames={
-                    '#status': 'status',
-                    '#error': 'error'  # 'error' is a DynamoDB reserved keyword
+            # Return immediately with processing status
+            return {
+                'statusCode': 202,
+                'headers': {
+                    'Content-Type': 'application/json',
+                    'Access-Control-Allow-Origin': '*'
                 },
-                ExpressionAttributeValues={
-                    ':status': 'failed',
-                    ':error': detection_result.get('error', 'Unknown error'),
-                    ':error_code': detection_result.get('error_code', 'UNKNOWN'),
-                    ':updated': datetime.utcnow().isoformat()
-                }
-            )
-        
-        # Return response
-        if detection_result.get('success'):
+                'body': json.dumps({
+                    'job_id': job_id,
+                    'blueprint_id': blueprint_id,
+                    'status': 'processing',
+                    'message': 'Detection started. Poll /results endpoint for completion.'
+                })
+            }
+        else:
+            # Process synchronously (for testing/debugging)
+            logger.info(f"Processing sync detection for job {job_id}")
+            process_detection_sync(blueprint_id, job_id, s3_key)
+            
+            # Get updated results
+            job_response = table.get_item(Key={'job_id': job_id})
+            job = job_response.get('Item')
+            
             return {
                 'statusCode': 200,
                 'headers': {
@@ -202,34 +280,18 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 'body': json.dumps({
                     'job_id': job_id,
                     'blueprint_id': blueprint_id,
-                    'status': 'completed',
-                    'rooms': detection_result.get('rooms', []),
-                    'doors': detection_result.get('doors', []),
-                    'confidence': detection_result.get('confidence', 0.0),
-                    'metadata': detection_result.get('metadata', {})
-                })
-            }
-        else:
-            return {
-                'statusCode': 500,
-                'headers': {
-                    'Content-Type': 'application/json',
-                    'Access-Control-Allow-Origin': '*'
-                },
-                'body': json.dumps({
-                    'job_id': job_id,
-                    'blueprint_id': blueprint_id,
-                    'status': 'failed',
-                    'error': detection_result.get('error', 'Unknown error'),
-                    'error_code': detection_result.get('error_code', 'UNKNOWN'),
-                    'partial_results': detection_result.get('rooms', [])
+                    'status': job.get('status'),
+                    'rooms': job.get('results', []),
+                    'doors': job.get('doors', []),
+                    'confidence': float(job.get('confidence', 0.0)) if job.get('confidence') else 0.0,
+                    'metadata': job.get('metadata', {})
                 })
             }
             
     except Exception as e:
         import traceback
         error_trace = traceback.format_exc()
-        logger.error(f"Detection error: {str(e)}")
+        logger.error(f"Handler error: {str(e)}")
         logger.error(f"Traceback: {error_trace}")
         
         return {
@@ -244,4 +306,3 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 'traceback': error_trace
             })
         }
-
