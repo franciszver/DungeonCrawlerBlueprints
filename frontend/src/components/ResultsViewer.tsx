@@ -94,7 +94,10 @@ export default function ResultsViewer({ result, blueprintImage, jobId }: Results
     return (
       <div className="bg-blue-50 border border-blue-200 rounded-lg p-6 text-center">
         <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto"></div>
-        <p className="mt-4 text-blue-700">Processing blueprint...</p>
+        <p className="mt-4 text-blue-700 font-semibold">Processing blueprint...</p>
+        <p className="mt-2 text-sm text-blue-600">Detecting rooms with AI vision models</p>
+        <p className="mt-1 text-xs text-blue-500">Using 5 training examples + validation for maximum accuracy</p>
+        <p className="mt-2 text-xs text-blue-400">Complex blueprints may take 2-6 minutes. Please wait...</p>
       </div>
     );
   }

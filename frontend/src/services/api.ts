@@ -51,8 +51,9 @@ export const detectRooms = async (blueprintId: string, jobId?: string): Promise<
   if (response.status === 202) {
     const asyncJobId = response.data.job_id;
     
-    // Poll every 2 seconds for up to 3 minutes (to allow for validation retry)
-    const maxAttempts = 90;
+    // Poll every 2 seconds for up to 6 minutes (to allow for complex blueprints + validation retry)
+    // Increased from 3 minutes to handle longer processing times
+    const maxAttempts = 180; // 180 attempts * 2 seconds = 6 minutes
     let attempts = 0;
     
     while (attempts < maxAttempts) {
@@ -70,16 +71,20 @@ export const detectRooms = async (blueprintId: string, jobId?: string): Promise<
           throw new Error(result.error || 'Detection failed');
         }
         // Continue polling if status is 'processing'
-      } catch (error) {
-        console.log(`Polling attempt ${attempts} error:`, error);
+      } catch (error: any) {
+        // Only log errors that aren't "not found" (job might not be ready yet)
+        if (error.response?.status !== 404) {
+          console.log(`Polling attempt ${attempts} error:`, error);
+        }
         // Continue polling on errors (job might not be ready yet)
         if (attempts >= maxAttempts) {
-          throw error;
+          // Return a processing result so user can manually check later
+          throw new Error(`Detection is taking longer than expected (${Math.floor(maxAttempts * 2 / 60)} minutes). Your job ID is ${asyncJobId} - you can check results manually using the "Check Results" button.`);
         }
       }
     }
     
-    throw new Error('Detection is taking longer than expected. Please refresh the page and check your results - they may have completed successfully.');
+    throw new Error(`Detection timeout after ${Math.floor(maxAttempts * 2 / 60)} minutes. Your job ID is ${asyncJobId} - please use the "Check Results" button to check if processing completed.`);
   }
 
   return response.data;

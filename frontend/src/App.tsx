@@ -10,49 +10,56 @@ function App() {
   const [detectionResult, setDetectionResult] = useState<DetectionResult | null>(null);
   const [blueprintImage, setBlueprintImage] = useState<string>('');
   const [error, setError] = useState<string>('');
+  const [isPolling, setIsPolling] = useState(false);
 
   const handleUploadComplete = async (result: UploadResponse) => {
     setUploadResult(result);
     setError('');
+    setIsPolling(true);
 
-    // Start detection
+    // Start detection - api.ts handles all polling internally
     try {
       const detectResult = await detectRooms(result.blueprint_id, result.job_id);
       setDetectionResult(detectResult);
-
-      // If still processing, poll for results
-      if (detectResult.status === 'processing') {
-        pollForResults(result.job_id);
-      }
+      setIsPolling(false);
     } catch (err: any) {
-      setError(err.response?.data?.error || err.message || 'Detection failed');
+      setIsPolling(false);
+      const errorMessage = err.response?.data?.error || err.message || 'Detection failed';
+      setError(errorMessage);
+      
+      // If timeout error, show job_id for manual checking
+      if (errorMessage.includes('longer than expected') && result.job_id) {
+        setDetectionResult({
+          job_id: result.job_id,
+          blueprint_id: result.blueprint_id,
+          status: 'processing',
+        });
+      }
     }
   };
 
-  const pollForResults = async (jobId: string) => {
-    const maxAttempts = 30; // 30 seconds max
-    let attempts = 0;
-
-    const poll = async () => {
-      if (attempts >= maxAttempts) {
-        setError('Detection timeout - please check results manually');
-        return;
+  const handleCheckResults = async () => {
+    if (!uploadResult?.job_id) return;
+    
+    setIsPolling(true);
+    setError('');
+    
+    try {
+      const result = await getResults(uploadResult.job_id);
+      setDetectionResult(result);
+      setIsPolling(false);
+      
+      if (result.status === 'completed') {
+        setError('');
+      } else if (result.status === 'failed') {
+        setError(result.error || 'Detection failed');
+      } else {
+        setError('Detection is still processing. Please check again in a moment.');
       }
-
-      try {
-        const result = await getResults(jobId);
-        setDetectionResult(result);
-
-        if (result.status !== 'completed' && result.status !== 'failed') {
-          attempts++;
-          setTimeout(poll, 1000); // Poll every second
-        }
-      } catch (err: any) {
-        setError(err.response?.data?.error || err.message || 'Failed to get results');
-      }
-    };
-
-    poll();
+    } catch (err: any) {
+      setIsPolling(false);
+      setError(err.response?.data?.error || err.message || 'Failed to check results');
+    }
   };
 
 
@@ -73,12 +80,23 @@ function App() {
         {error && (
           <div className="mb-6 bg-red-50 border border-red-200 rounded-lg p-4">
             <p className="text-red-800">{error}</p>
-            <button
-              onClick={() => setError('')}
-              className="mt-2 text-sm text-red-600 hover:text-red-800"
-            >
-              Dismiss
-            </button>
+            <div className="mt-2 flex gap-2">
+              {uploadResult?.job_id && (
+                <button
+                  onClick={handleCheckResults}
+                  disabled={isPolling}
+                  className="text-sm bg-red-600 text-white px-3 py-1 rounded hover:bg-red-700 disabled:bg-gray-400 disabled:cursor-not-allowed"
+                >
+                  {isPolling ? 'Checking...' : 'Check Results'}
+                </button>
+              )}
+              <button
+                onClick={() => setError('')}
+                className="text-sm text-red-600 hover:text-red-800"
+              >
+                Dismiss
+              </button>
+            </div>
           </div>
         )}
 
@@ -114,13 +132,23 @@ function App() {
               </>
             )}
 
-            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
+            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4 space-y-2">
+              {detectionResult?.status === 'processing' && (
+                <button
+                  onClick={handleCheckResults}
+                  disabled={isPolling}
+                  className="w-full bg-blue-600 text-white py-2 px-4 rounded-lg hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors"
+                >
+                  {isPolling ? 'Checking Results...' : 'Check Results Manually'}
+                </button>
+              )}
               <button
                 onClick={() => {
                   setUploadResult(null);
                   setDetectionResult(null);
                   setBlueprintImage('');
                   setError('');
+                  setIsPolling(false);
                 }}
                 className="w-full bg-gray-600 text-white py-2 px-4 rounded-lg hover:bg-gray-700 transition-colors"
               >
