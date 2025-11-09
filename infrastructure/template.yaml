@@ -45,12 +45,26 @@ Resources:
       Name: DungeonCrawlerBlueprints-API
       StageName: dev
       Cors:
-        AllowMethods: "'GET,POST,OPTIONS'"
-        AllowHeaders: "'Content-Type,x-api-key,Authorization'"
+        AllowMethods: "'GET,POST,PUT,DELETE,OPTIONS'"
+        AllowHeaders: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token,x-api-key'"
         AllowOrigin: "'*'"
+        AllowCredentials: false
         MaxAge: "'600'"
       Auth:
         ApiKeyRequired: true
+      GatewayResponses:
+        DEFAULT_4XX:
+          ResponseParameters:
+            Headers:
+              Access-Control-Allow-Origin: "'*'"
+              Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token,x-api-key'"
+              Access-Control-Allow-Methods: "'GET,POST,PUT,DELETE,OPTIONS'"
+        DEFAULT_5XX:
+          ResponseParameters:
+            Headers:
+              Access-Control-Allow-Origin: "'*'"
+              Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token,x-api-key'"
+              Access-Control-Allow-Methods: "'GET,POST,PUT,DELETE,OPTIONS'"
 
   # API Key
   ApiKey:
