@@ -25,6 +25,19 @@ Globals:
         MAX_CANVAS_HEIGHT: '2000'
 
 Resources:
+  # Lambda Layer for Dependencies
+  DependenciesLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: DungeonCrawlerBlueprints-Dependencies
+      Description: Common dependencies for all Lambda functions
+      ContentUri: ../layers/dependencies
+      CompatibleRuntimes:
+        - python3.13
+      RetentionPolicy: Retain
+    Metadata:
+      BuildMethod: python3.13
+
   # API Gateway
   BlueprintsApi:
     Type: AWS::Serverless::Api
@@ -121,6 +134,8 @@ Resources:
       FunctionName: DungeonCrawlerBlueprints-Upload
       CodeUri: ../backend/functions/upload
       Handler: handler.lambda_handler
+      Layers:
+        - !Ref DependenciesLayer
       Events:
         UploadApi:
           Type: Api
@@ -152,6 +167,8 @@ Resources:
       Handler: functions.detect.handler.lambda_handler
       Timeout: 30
       MemorySize: 1024
+      Layers:
+        - !Ref DependenciesLayer
       Events:
         DetectApi:
           Type: Api
@@ -179,6 +196,8 @@ Resources:
       FunctionName: DungeonCrawlerBlueprints-Results
       CodeUri: ../backend
       Handler: functions.results.handler.lambda_handler
+      Layers:
+        - !Ref DependenciesLayer
       Events:
         ResultsApi:
           Type: Api
@@ -198,6 +217,8 @@ Resources:
       FunctionName: DungeonCrawlerBlueprints-Export
       CodeUri: ../backend
       Handler: functions.export.handler.lambda_handler
+      Layers:
+        - !Ref DependenciesLayer
       Events:
         ExportApi:
           Type: Api
@@ -217,6 +238,8 @@ Resources:
       FunctionName: DungeonCrawlerBlueprints-Health
       CodeUri: ../backend
       Handler: functions.health.handler.lambda_handler
+      Layers:
+        - !Ref DependenciesLayer
       Events:
         HealthApi:
           Type: Api
@@ -235,6 +258,8 @@ Resources:
       Handler: functions.extend.handler.lambda_handler
       Timeout: 30
       MemorySize: 1024
+      Layers:
+        - !Ref DependenciesLayer
       Events:
         ExtendApi:
           Type: Api

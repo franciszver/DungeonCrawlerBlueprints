@@ -86,9 +86,19 @@ Thumbs.db
 .aws-sam/
 samconfig.toml.local
 
+# Lambda Layers
+layers/dependencies/python/
+layers/**/python/
+
 # Lambda deployment packages
 lambda-deployment.zip
 *.zip
+
+# AWS and deployment artifacts
+.aws/
+*.pem
+*.key
+*.crt
 
 # Logs
 *.log
