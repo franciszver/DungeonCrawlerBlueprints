@@ -12,6 +12,7 @@ if shared_path not in sys.path:
 
 from openrouter_client import detect_rooms_with_validation, normalize_coordinates
 from training_data_loader import get_training_data_loader
+from detection_validator import validate_and_enhance_detection, should_retry_with_strict_mode
 
 
 def process_blueprint_image(image_data: bytes, image_format: str = 'png') -> Dict[str, Any]:
@@ -75,6 +76,43 @@ def process_blueprint_image(image_data: bytes, image_format: str = 'png') -> Dic
                 # Coordinates are in pixel space, normalize them
                 rooms = normalize_coordinates(rooms, 1000, 1000)
         
+        # Validate detection results
+        rooms, validation_results = validate_and_enhance_detection(rooms, doors, image_base64)
+        
+        # If validation fails and we haven't retried yet, retry with strict mode
+        if should_retry_with_strict_mode(validation_results) and detection_metadata.get("retry_count", 0) == 0:
+            print("Validation failed, retrying with strict mode...")
+            
+            # Retry detection with strict mode enabled
+            retry_result = detect_rooms_with_validation(
+                image_base64,
+                image_format,
+                few_shot_examples=few_shot_examples,
+                strict_mode=True
+            )
+            
+            if retry_result.get("success", False):
+                retry_rooms = retry_result.get("rooms", [])
+                retry_doors = retry_result.get("doors", [])
+                
+                # Normalize if needed
+                if retry_rooms:
+                    sample_bbox = retry_rooms[0].get('bounding_box', [])
+                    if sample_bbox and max(sample_bbox) > 1000:
+                        retry_rooms = normalize_coordinates(retry_rooms, 1000, 1000)
+                
+                # Validate retry results
+                retry_rooms, retry_validation = validate_and_enhance_detection(retry_rooms, retry_doors, image_base64)
+                
+                # Use retry results if they're better
+                if retry_validation.get("coverage_score", 0) > validation_results.get("coverage_score", 0):
+                    rooms = retry_rooms
+                    doors = retry_doors
+                    detection_metadata = retry_result.get("detection_metadata", {})
+                    detection_metadata["strict_mode_retry"] = True
+                    validation_results = retry_validation
+                    print(f"Strict mode improved coverage from {validation_results.get('coverage_score', 0):.1%} to {retry_validation.get('coverage_score', 0):.1%}")
+        
         processing_time_ms = int((time.time() - start_time) * 1000)
         
         # Build comprehensive metadata
@@ -87,7 +125,13 @@ def process_blueprint_image(image_data: bytes, image_format: str = 'png') -> Dic
             "primary_model": detection_metadata.get("primary_model", "unknown"),
             "processing_time_ms": processing_time_ms,
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            "few_shot_examples_used": len(few_shot_examples) if few_shot_examples else 0
+            "few_shot_examples_used": len(few_shot_examples) if few_shot_examples else 0,
+            "validation": {
+                "coverage_score": validation_results.get("coverage_score", 0.0),
+                "validation_passed": validation_results.get("validation_passed", False),
+                "warnings": validation_results.get("warnings", []),
+                "strict_mode_retry": detection_metadata.get("strict_mode_retry", False)
+            }
         }
         
         return {

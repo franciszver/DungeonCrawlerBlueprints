@@ -131,3 +131,6 @@ scripts/
 # Text files in root folder only
 /*.txt
 !README.md
+
+# Training data (local cache - should be in S3)
+training_data_local/

@@ -19,7 +19,8 @@ from config import (
 
 
 def detect_rooms_with_validation(image_base64: str, image_format: str = 'png',
-                                 few_shot_examples: Optional[List[Dict]] = None) -> Dict[str, Any]:
+                                 few_shot_examples: Optional[List[Dict]] = None,
+                                 strict_mode: bool = False) -> Dict[str, Any]:
     """
     Detect rooms with multi-model validation and confidence-based retry.
     
@@ -27,6 +28,7 @@ def detect_rooms_with_validation(image_base64: str, image_format: str = 'png',
         image_base64: Base64-encoded image data
         image_format: Image format (png, jpg, etc.)
         few_shot_examples: Optional list of training examples for few-shot learning
+        strict_mode: Whether to use strict mode for maximum accuracy
         
     Returns:
         Dictionary with detected rooms, metadata, and confidence scores
@@ -47,7 +49,8 @@ def detect_rooms_with_validation(image_base64: str, image_format: str = 'png',
         api_key,
         few_shot_examples,
         enable_polygon=ENABLE_POLYGON_DETECTION,
-        enable_doors=ENABLE_DOOR_DETECTION
+        enable_doors=ENABLE_DOOR_DETECTION,
+        strict_mode=strict_mode
     )
     
     models_used.append(OPENROUTER_MODEL)
@@ -71,7 +74,8 @@ def detect_rooms_with_validation(image_base64: str, image_format: str = 'png',
                 api_key,
                 few_shot_examples,
                 enable_polygon=ENABLE_POLYGON_DETECTION,
-                enable_doors=ENABLE_DOOR_DETECTION
+                enable_doors=ENABLE_DOOR_DETECTION,
+                strict_mode=strict_mode
             )
             
             models_used.append(validation_model)
@@ -97,7 +101,8 @@ def detect_rooms_with_validation(image_base64: str, image_format: str = 'png',
             api_key,
             few_shot_examples,
             enable_polygon=False,
-            enable_doors=ENABLE_DOOR_DETECTION
+            enable_doors=ENABLE_DOOR_DETECTION,
+            strict_mode=strict_mode
         )
         if fallback_result.get('success'):
             best_result = fallback_result
@@ -124,7 +129,8 @@ def detect_rooms_with_validation(image_base64: str, image_format: str = 'png',
 
 def _detect_with_model(model: str, image_base64: str, image_format: str,
                       api_key: str, few_shot_examples: Optional[List[Dict]] = None,
-                      enable_polygon: bool = True, enable_doors: bool = True) -> Dict[str, Any]:
+                      enable_polygon: bool = True, enable_doors: bool = True,
+                      strict_mode: bool = False) -> Dict[str, Any]:
     """
     Detect rooms using a specific model.
     
@@ -136,12 +142,13 @@ def _detect_with_model(model: str, image_base64: str, image_format: str,
         few_shot_examples: Optional training examples
         enable_polygon: Whether to detect polygon boundaries
         enable_doors: Whether to detect doors
+        strict_mode: Whether to use strict mode for maximum accuracy
         
     Returns:
         Detection result dictionary
     """
     # Build prompt
-    prompt = _build_detection_prompt(enable_polygon, enable_doors, few_shot_examples)
+    prompt = _build_detection_prompt(enable_polygon, enable_doors, few_shot_examples, strict_mode)
     
     # Construct image URL
     image_url = f"data:image/{image_format};base64,{image_base64}"
@@ -270,13 +277,24 @@ def _detect_with_model(model: str, image_base64: str, image_format: str,
 
 
 def _build_detection_prompt(enable_polygon: bool, enable_doors: bool,
-                           few_shot_examples: Optional[List[Dict]] = None) -> str:
+                           few_shot_examples: Optional[List[Dict]] = None,
+                           strict_mode: bool = False) -> str:
     """Build the detection prompt based on enabled features."""
     
     if few_shot_examples:
         prompt = "Analyze this architectural blueprint following the examples above.\n\n"
     else:
         prompt = "Analyze this architectural blueprint and detect all distinct rooms/spaces.\n\n"
+    
+    # Add strict mode instructions for maximum accuracy
+    if strict_mode:
+        prompt += "STRICT MODE - Maximum Accuracy Required:\n"
+        prompt += "Follow this systematic approach:\n"
+        prompt += "1. Scan the entire blueprint from top-left to bottom-right\n"
+        prompt += "2. Identify EVERY enclosed space, including small rooms in corners\n"
+        prompt += "3. Trace boundaries along interior wall edges with ±5% precision\n"
+        prompt += "4. Verify that 85%+ of the blueprint area is accounted for\n"
+        prompt += "5. Double-check for any missed rooms before finalizing\n\n"
     
     prompt += "Return a JSON object with the following structure:\n{\n"
     
@@ -321,7 +339,14 @@ def _build_detection_prompt(enable_polygon: bool, enable_doors: bool,
         prompt += '- Bounding boxes: [x_min, y_min, x_max, y_max] format\n'
     
     prompt += '- Confidence should reflect detection certainty (0.0-1.0)\n'
-    prompt += '- Include all enclosed spaces (rooms, hallways, closets, etc.)\n'
+    prompt += '- CRITICAL: Include ALL enclosed spaces (rooms, hallways, closets, bathrooms, etc.)\n'
+    prompt += '- Boundaries must follow interior wall edges precisely\n'
+    prompt += '- Maintain accurate proportions relative to the full blueprint\n'
+    
+    if strict_mode:
+        prompt += '- Verify complete coverage: no large gaps should remain undetected\n'
+        prompt += '- Pay special attention to rooms in corners and edges\n'
+        prompt += '- Small rooms (closets, bathrooms) are just as important as large ones\n'
     
     if enable_doors:
         prompt += '- Detect all doors and openings between rooms\n'

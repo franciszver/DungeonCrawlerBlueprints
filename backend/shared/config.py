@@ -18,13 +18,13 @@ VALIDATION_MODELS = [
     'anthropic/claude-3.5-sonnet',
     'google/gemini-pro-vision'
 ]
-CONFIDENCE_THRESHOLD = float(os.environ.get('CONFIDENCE_THRESHOLD', '0.7'))
+CONFIDENCE_THRESHOLD = float(os.environ.get('CONFIDENCE_THRESHOLD', '0.75'))
 MAX_RETRY_ATTEMPTS = int(os.environ.get('MAX_RETRY_ATTEMPTS', '2'))
 
 # Detection Features
 ENABLE_POLYGON_DETECTION = os.environ.get('ENABLE_POLYGON_DETECTION', 'true').lower() == 'true'
 ENABLE_DOOR_DETECTION = os.environ.get('ENABLE_DOOR_DETECTION', 'true').lower() == 'true'
-FEW_SHOT_EXAMPLE_COUNT = int(os.environ.get('FEW_SHOT_EXAMPLE_COUNT', '3'))
+FEW_SHOT_EXAMPLE_COUNT = int(os.environ.get('FEW_SHOT_EXAMPLE_COUNT', '5'))
 
 # Coordinate System
 COORDINATE_MAX = 1000
