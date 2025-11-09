@@ -4,6 +4,7 @@ import boto3
 import sys
 import os
 from typing import Dict, Any
+from decimal import Decimal
 
 # Add shared module to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../shared'))
@@ -13,6 +14,18 @@ from config import DYNAMODB_TABLE_NAME
 from cors import cors_response, handle_options_request
 
 dynamodb = boto3.resource('dynamodb')
+
+
+def decimal_to_float(obj):
+    """Convert Decimal objects to float for JSON serialization."""
+    if isinstance(obj, list):
+        return [decimal_to_float(item) for item in obj]
+    elif isinstance(obj, dict):
+        return {key: decimal_to_float(value) for key, value in obj.items()}
+    elif isinstance(obj, Decimal):
+        return float(obj)
+    else:
+        return obj
 
 
 def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
@@ -86,6 +99,13 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         doors = job.get('doors', [])
         extended_rooms = job.get('extended_rooms', [])
         modified_rooms = job.get('modified_rooms', [])
+        
+        # Convert Decimal to float for JSON serialization
+        rooms = decimal_to_float(rooms)
+        doors = decimal_to_float(doors)
+        extended_rooms = decimal_to_float(extended_rooms)
+        modified_rooms = decimal_to_float(modified_rooms)
+        
         all_rooms = rooms + modified_rooms + extended_rooms
         
         if export_format == 'svg':
@@ -110,7 +130,7 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 'extended_rooms': extended_rooms,
                 'modified_rooms': modified_rooms,
                 'confidence': float(job.get('confidence', 0.0)) if job.get('confidence') else 0.0,
-                'metadata': job.get('metadata', {}),
+                'metadata': decimal_to_float(job.get('metadata', {})),
                 'exported_at': job.get('updated_at')
             }
             return {

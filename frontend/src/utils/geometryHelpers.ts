@@ -290,10 +290,10 @@ export const scalePolygonToFit = (
 export const findNearestEdge = (
   polygon: Polygon,
   point: [number, number],
-  threshold: number = 10
+  threshold: number = 50
 ): { edgeIndex: number; distance: number; closestPoint: [number, number] } | null => {
   let nearestEdge: { edgeIndex: number; distance: number; closestPoint: [number, number] } | null = null;
-  let nearestDistance = threshold;
+  let nearestDistance = Infinity; // Find nearest edge regardless of distance
   
   for (let i = 0; i < polygon.length; i++) {
     const p1 = polygon[i];
@@ -340,7 +340,12 @@ export const findNearestEdge = (
     }
   }
   
-  return nearestEdge;
+  // Only return if within threshold
+  if (nearestEdge && nearestEdge.distance <= threshold) {
+    return nearestEdge;
+  }
+  
+  return null;
 };
 
 /**
@@ -361,5 +366,84 @@ export const calculateEdgeDirection = (
     // Vertical edge
     return dy > 0 ? 'S' : 'N';
   }
+};
+
+/**
+ * Snap a coordinate to the nearest grid point
+ */
+export const snapToGrid = (value: number, gridSize: number): number => {
+  return Math.round(value / gridSize) * gridSize;
+};
+
+/**
+ * Snap a point to the nearest grid intersection
+ */
+export const snapPointToGrid = (
+  point: [number, number],
+  gridSize: number
+): [number, number] => {
+  return [snapToGrid(point[0], gridSize), snapToGrid(point[1], gridSize)];
+};
+
+/**
+ * Insert a vertex into a polygon at a specific edge
+ */
+export const insertVertexInPolygon = (
+  polygon: Polygon,
+  edgeIndex: number,
+  point: [number, number]
+): Polygon => {
+  const newPolygon = [...polygon];
+  newPolygon.splice(edgeIndex + 1, 0, point);
+  return newPolygon;
+};
+
+/**
+ * Get the perpendicular unit vector for an edge
+ */
+export const getEdgePerpendicularVector = (
+  p1: [number, number],
+  p2: [number, number]
+): [number, number] => {
+  const dx = p2[0] - p1[0];
+  const dy = p2[1] - p1[1];
+  const length = Math.sqrt(dx * dx + dy * dy);
+  
+  if (length === 0) return [0, 0];
+  
+  // Return perpendicular unit vector (rotated 90 degrees)
+  return [-dy / length, dx / length];
+};
+
+/**
+ * Project a point onto a line defined by a point and direction
+ */
+export const projectPointOntoLine = (
+  point: [number, number],
+  lineStart: [number, number],
+  lineDirection: [number, number]
+): number => {
+  const dx = point[0] - lineStart[0];
+  const dy = point[1] - lineStart[1];
+  
+  // Calculate scalar projection
+  const dotProduct = dx * lineDirection[0] + dy * lineDirection[1];
+  return dotProduct;
+};
+
+/**
+ * Get the edge direction vector (normalized)
+ */
+export const getEdgeDirection = (
+  p1: [number, number],
+  p2: [number, number]
+): [number, number] => {
+  const dx = p2[0] - p1[0];
+  const dy = p2[1] - p1[1];
+  const length = Math.sqrt(dx * dx + dy * dy);
+  
+  if (length === 0) return [0, 0];
+  
+  return [dx / length, dy / length];
 };
 

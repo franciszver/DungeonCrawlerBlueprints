@@ -2,6 +2,7 @@ import { useState } from 'react';
 import BlueprintUpload from './components/BlueprintUpload';
 import ResultsViewer from './components/ResultsViewer';
 import ExportPanel from './components/ExportPanel';
+import LoadingSpinner from './components/LoadingSpinner';
 import { detectRooms, getResults } from './services/api';
 import type { UploadResponse, DetectionResult } from './types';
 
@@ -11,19 +12,30 @@ function App() {
   const [blueprintImage, setBlueprintImage] = useState<string>('');
   const [error, setError] = useState<string>('');
   const [isPolling, setIsPolling] = useState(false);
+  const [pollingAttempt, setPollingAttempt] = useState(0);
+  const [pollingMaxAttempts] = useState(180); // 6 minutes
 
   const handleUploadComplete = async (result: UploadResponse) => {
     setUploadResult(result);
     setError('');
     setIsPolling(true);
+    setPollingAttempt(0);
 
     // Start detection - api.ts handles all polling internally
     try {
-      const detectResult = await detectRooms(result.blueprint_id, result.job_id);
+      const detectResult = await detectRooms(
+        result.blueprint_id, 
+        result.job_id,
+        (current, total) => {
+          setPollingAttempt(current);
+        }
+      );
       setDetectionResult(detectResult);
       setIsPolling(false);
+      setPollingAttempt(0);
     } catch (err: any) {
       setIsPolling(false);
+      setPollingAttempt(0);
       const errorMessage = err.response?.data?.error || err.message || 'Detection failed';
       setError(errorMessage);
       
@@ -115,6 +127,12 @@ function App() {
                 };
                 reader.readAsDataURL(file);
               }}
+            />
+          </div>
+        ) : isPolling ? (
+          <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-12">
+            <LoadingSpinner
+              message="Processing Blueprint..."
             />
           </div>
         ) : (

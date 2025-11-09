@@ -4,19 +4,48 @@ import boto3
 import sys
 import os
 from datetime import datetime
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from decimal import Decimal
 
 # Add shared module to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../shared'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../..'))
 
-from room_generator import generate_room, validate_room_placement
+from room_generator import generate_room, validate_room_placement, smart_room_placement
 from openrouter_client import suggest_room_type
-from config import DYNAMODB_TABLE_NAME
+from config import DYNAMODB_TABLE_NAME, ENABLE_SMART_PLACEMENT
 from cors import cors_response, handle_options_request
 
 dynamodb = boto3.resource('dynamodb')
+
+
+def _get_dimensions_for_room_type(room_type: str, mode: str) -> Dict[str, float]:
+    """Get default dimensions for a room type (simplified version)."""
+    if mode == "fantasy":
+        dimensions_map = {
+            "Treasure Room": {"width": 250, "height": 250},
+            "Boss Chamber": {"width": 400, "height": 400},
+            "Corridor": {"width": 150, "height": 400},
+            "Secret Room": {"width": 200, "height": 200},
+            "Trap Room": {"width": 300, "height": 300},
+            "Storage": {"width": 200, "height": 250},
+            "Guard Post": {"width": 250, "height": 250},
+        }
+    else:
+        dimensions_map = {
+            "Bedroom": {"width": 350, "height": 400},
+            "Bathroom": {"width": 250, "height": 300},
+            "Kitchen": {"width": 400, "height": 350},
+            "Living Room": {"width": 500, "height": 450},
+            "Dining Room": {"width": 400, "height": 400},
+            "Hallway": {"width": 150, "height": 400},
+            "Closet": {"width": 200, "height": 150},
+            "Office": {"width": 350, "height": 350},
+            "Garage": {"width": 600, "height": 600},
+            "Pantry": {"width": 200, "height": 250},
+        }
+    
+    return dimensions_map.get(room_type, {"width": 300, "height": 300})
 
 
 def convert_floats_to_decimal(obj):
@@ -150,49 +179,114 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                     })
                 }
             
-            # Generate room
-            generation_result = generate_room(
-                door_location,
-                door_direction,
-                current_room_type,
-                mode,
-                room_type
-            )
+            # Get room type and dimensions
+            if room_type is None:
+                suggestions_result = suggest_room_type(current_room_type, door_direction, mode)
+                if suggestions_result.get("success") and suggestions_result.get("suggestions"):
+                    suggestions = suggestions_result["suggestions"]
+                    suggestions.sort(key=lambda x: x.get("probability", 0), reverse=True)
+                    room_type = suggestions[0]["room_type"]
+                    dimensions = suggestions[0].get("typical_dimensions", {"width": 300, "height": 300})
+                else:
+                    room_type = "Room"
+                    dimensions = {"width": 300, "height": 300}
+            else:
+                dimensions = _get_dimensions_for_room_type(room_type, mode)
             
-            if not generation_result.get('success'):
-                return {
-                    'statusCode': 500,
-                    'headers': {
-                        'Content-Type': 'application/json',
-                        'Access-Control-Allow-Origin': '*'
-                    },
-                    'body': json.dumps({
-                        'error': generation_result.get('error', 'Generation failed'),
-                        'error_code': generation_result.get('error_code', 'GENERATION_ERROR')
-                    })
+            # Use smart placement if enabled
+            if ENABLE_SMART_PLACEMENT:
+                # Get all existing rooms (including modified)
+                modified_rooms = job.get('modified_rooms', [])
+                all_existing_rooms = existing_rooms + extended_rooms + modified_rooms
+                
+                polygon = smart_room_placement(
+                    door_location,
+                    door_direction,
+                    dimensions,
+                    all_existing_rooms,
+                    room_type,
+                    mode
+                )
+                
+                if polygon is None:
+                    return {
+                        'statusCode': 400,
+                        'headers': {
+                            'Content-Type': 'application/json',
+                            'Access-Control-Allow-Origin': '*'
+                        },
+                        'body': json.dumps({
+                            'error': 'No valid placement found for room. Try a different door or adjust existing rooms.',
+                            'error_code': 'NO_VALID_PLACEMENT'
+                        })
+                    }
+                
+                # Create room from polygon
+                import uuid
+                room_id = f"extended_{uuid.uuid4().hex[:8]}"
+                bounding_box = [
+                    min(p[0] for p in polygon),
+                    min(p[1] for p in polygon),
+                    max(p[0] for p in polygon),
+                    max(p[1] for p in polygon)
+                ]
+                
+                new_room = {
+                    "id": room_id,
+                    "polygon": polygon,
+                    "bounding_box": bounding_box,
+                    "name_hint": room_type,
+                    "confidence": 0.95,
+                    "is_extended": True,
+                    "connected_door": {
+                        "location": door_location,
+                        "direction": door_direction
+                    }
                 }
-            
-            new_room = generation_result['room']
-            
-            # Validate placement
-            validation_result = validate_room_placement(
-                new_room['polygon'],
-                all_rooms
-            )
-            
-            if not validation_result.get('valid'):
-                return {
-                    'statusCode': 400,
-                    'headers': {
-                        'Content-Type': 'application/json',
-                        'Access-Control-Allow-Origin': '*'
-                    },
-                    'body': json.dumps({
-                        'error': validation_result.get('error', 'Invalid placement'),
-                        'error_code': 'INVALID_PLACEMENT',
-                        'overlapping_room_id': validation_result.get('overlapping_room_id')
-                    })
-                }
+            else:
+                # Use standard generation
+                generation_result = generate_room(
+                    door_location,
+                    door_direction,
+                    current_room_type,
+                    mode,
+                    room_type
+                )
+                
+                if not generation_result.get('success'):
+                    return {
+                        'statusCode': 500,
+                        'headers': {
+                            'Content-Type': 'application/json',
+                            'Access-Control-Allow-Origin': '*'
+                        },
+                        'body': json.dumps({
+                            'error': generation_result.get('error', 'Generation failed'),
+                            'error_code': generation_result.get('error_code', 'GENERATION_ERROR')
+                        })
+                    }
+                
+                new_room = generation_result['room']
+                
+                # Validate placement
+                validation_result = validate_room_placement(
+                    new_room['polygon'],
+                    all_rooms
+                )
+                
+                if not validation_result.get('valid'):
+                    return {
+                        'statusCode': 400,
+                        'headers': {
+                            'Content-Type': 'application/json',
+                            'Access-Control-Allow-Origin': '*'
+                        },
+                        'body': json.dumps({
+                            'error': validation_result.get('error', 'Invalid placement'),
+                            'error_code': 'INVALID_PLACEMENT',
+                            'overlapping_room_id': validation_result.get('overlapping_room_id')
+                        })
+                    }
             
             # Add to extended rooms
             extended_rooms.append(new_room)
@@ -255,13 +349,14 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         
         elif action == 'update_plan':
             # Update modified rooms, extended rooms, and doors
-            modified_rooms = body.get('modified_rooms', [])
+            modified_rooms = body.get('modified_rooms')
             updated_extended_rooms = body.get('extended_rooms')
             updated_doors = body.get('doors')
             
             update_expression_parts = ['updated_at = :updated']
             expression_values = {':updated': datetime.utcnow().isoformat()}
             
+            # Only update fields that are explicitly provided
             if modified_rooms is not None:
                 update_expression_parts.append('modified_rooms = :modified')
                 expression_values[':modified'] = convert_floats_to_decimal(modified_rooms)
@@ -274,12 +369,14 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 update_expression_parts.append('doors = :doors')
                 expression_values[':doors'] = convert_floats_to_decimal(updated_doors)
             
-            # Update job in DynamoDB
-            table.update_item(
-                Key={'job_id': job_id},
-                UpdateExpression=f'SET {", ".join(update_expression_parts)}',
-                ExpressionAttributeValues=expression_values
-            )
+            # Only update if there's something to update
+            if len(update_expression_parts) > 1:
+                # Update job in DynamoDB
+                table.update_item(
+                    Key={'job_id': job_id},
+                    UpdateExpression=f'SET {", ".join(update_expression_parts)}',
+                    ExpressionAttributeValues=expression_values
+                )
             
             return {
                 'statusCode': 200,

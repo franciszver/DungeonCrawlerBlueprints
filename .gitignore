@@ -8,8 +8,12 @@ __pycache__/
 *.so
 *.egg
 *.egg-info/
+*.whl
 dist/
 build/
+
+# Local Python environment (installed packages)
+python/
 
 # Backend vendor dependencies (Lambda layers and installed packages)
 backend/bin/

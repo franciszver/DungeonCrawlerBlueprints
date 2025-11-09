@@ -41,7 +41,11 @@ export const uploadBlueprint = async (file: File): Promise<UploadResponse> => {
   return response.data;
 };
 
-export const detectRooms = async (blueprintId: string, jobId?: string): Promise<DetectionResult> => {
+export const detectRooms = async (
+  blueprintId: string, 
+  jobId?: string,
+  onProgress?: (current: number, total: number) => void
+): Promise<DetectionResult> => {
   const response = await apiClient.post<DetectionResult>('/detect', {
     blueprint_id: blueprintId,
     job_id: jobId,
@@ -59,6 +63,11 @@ export const detectRooms = async (blueprintId: string, jobId?: string): Promise<
     while (attempts < maxAttempts) {
       await new Promise(resolve => setTimeout(resolve, 2000));
       attempts++;
+      
+      // Report progress
+      if (onProgress) {
+        onProgress(attempts, maxAttempts);
+      }
       
       try {
         const result = await getResults(asyncJobId);
@@ -178,6 +187,30 @@ export const updatePlan = async (
   }
 
   const response = await apiClient.post<{ job_id: string; message: string }>(`/extend/${jobId}`, request);
+  return response.data;
+};
+
+export interface RefineRoomBoundariesResponse {
+  success: boolean;
+  rooms: any[];
+  extended_rooms: any[];
+  modified_rooms: any[];
+  stats: {
+    total_rooms: number;
+    refined_rooms: number;
+    vertices_snapped: number;
+    average_snap_distance: number;
+  };
+}
+
+export const refineRoomBoundaries = async (
+  jobId: string,
+  threshold: number = 50
+): Promise<RefineRoomBoundariesResponse> => {
+  const response = await apiClient.post<RefineRoomBoundariesResponse>(
+    `/refine/${jobId}`,
+    { threshold }
+  );
   return response.data;
 };
 

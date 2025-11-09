@@ -297,6 +297,38 @@ Resources:
                 - s3:GetObject
                 - s3:ListBucket
               Resource:
+                - !Sub 'arn:aws:s3:::${BlueprintsBucket}/*'
+                - !Sub 'arn:aws:s3:::${BlueprintsBucket}'
+
+  RefineFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: DungeonCrawlerBlueprints-Refine
+      CodeUri: ../backend
+      Handler: functions.refine.handler.lambda_handler
+      Timeout: 60
+      MemorySize: 2048
+      Layers:
+        - !Ref DependenciesLayer
+      Events:
+        RefineApi:
+          Type: Api
+          Properties:
+            RestApiId: !Ref BlueprintsApi
+            Path: /refine/{job_id}
+            Method: post
+            Auth:
+              ApiKeyRequired: true
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref JobsTable
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:ListBucket
+              Resource:
                 - !Sub '${BlueprintsBucket.Arn}'
                 - !Sub '${BlueprintsBucket.Arn}/*'
 

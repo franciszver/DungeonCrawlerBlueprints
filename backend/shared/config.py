@@ -34,6 +34,12 @@ COORDINATE_MIN = 0
 MAX_CANVAS_WIDTH = int(os.environ.get('MAX_CANVAS_WIDTH', '2000'))
 MAX_CANVAS_HEIGHT = int(os.environ.get('MAX_CANVAS_HEIGHT', '2000'))
 
+# Room Generation Feature Flags
+ENABLE_SIZE_VARIATION = os.environ.get('ENABLE_SIZE_VARIATION', 'true').lower() == 'true'
+ENABLE_POLYGON_COLLISION = os.environ.get('ENABLE_POLYGON_COLLISION', 'true').lower() == 'true'
+ENABLE_SHAPED_ROOMS = os.environ.get('ENABLE_SHAPED_ROOMS', 'true').lower() == 'true'
+ENABLE_SMART_PLACEMENT = os.environ.get('ENABLE_SMART_PLACEMENT', 'true').lower() == 'true'
+
 # Processing Limits
 MAX_IMAGE_SIZE_MB = 10
 MAX_PROCESSING_TIME_SECONDS = 30
@@ -48,4 +54,14 @@ def get_openrouter_api_key() -> str:
         return secret.get('api_key') or secret.get('OPENROUTER_API_KEY', '')
     except Exception as e:
         raise ValueError(f"Failed to retrieve OpenRouter API key: {str(e)}")
+
+def get_dynamodb_table():
+    """Get DynamoDB table resource."""
+    import boto3
+    dynamodb = boto3.resource('dynamodb')
+    return dynamodb.Table(DYNAMODB_TABLE_NAME)
+
+def get_s3_bucket() -> str:
+    """Get S3 bucket name."""
+    return S3_BUCKET_NAME
 
