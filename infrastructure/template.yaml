@@ -11,6 +11,7 @@ Globals:
       Variables:
         DYNAMODB_TABLE_NAME: !Ref JobsTable
         S3_BUCKET_NAME: !Ref BlueprintsBucket
+        REFINEMENT_CACHE_TABLE: !Ref RefinementCacheTable
         SECRETS_MANAGER_SECRET_NAME: dungeoncrawler/openrouter-api-key
         OPENROUTER_MODEL: openai/gpt-4o
         # Multi-Model Detection
@@ -25,6 +26,32 @@ Globals:
         MAX_CANVAS_HEIGHT: '2000'
 
 Resources:
+  # ECR Repository for RefineFunction Container Image (Optional Upgrade)
+  RefineFunctionECR:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: dungeoncrawler-blueprints-refine
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {
+            "rules": [
+              {
+                "rulePriority": 1,
+                "description": "Keep last 5 images",
+                "selection": {
+                  "tagStatus": "any",
+                  "countType": "imageCountMoreThan",
+                  "countNumber": 5
+                },
+                "action": {
+                  "type": "expire"
+                }
+              }
+            ]
+          }
+
   # Lambda Layer for Dependencies
   DependenciesLayer:
     Type: AWS::Serverless::LayerVersion
@@ -136,6 +163,22 @@ Resources:
               KeyType: HASH
           Projection:
             ProjectionType: ALL
+
+  # DynamoDB Table for Refinement Cache
+  RefinementCacheTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: DungeonCrawlerBlueprints-RefinementCache
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: cache_key
+          AttributeType: S
+      KeySchema:
+        - AttributeName: cache_key
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
 
   # Secrets Manager Secret for OpenRouter API Key
   # Note: Secret is created manually via scripts/setup-secret.ps1
@@ -322,6 +365,8 @@ Resources:
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref JobsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RefinementCacheTable
         - Version: '2012-10-17'
           Statement:
             - Effect: Allow
@@ -331,6 +376,39 @@ Resources:
               Resource:
                 - !Sub '${BlueprintsBucket.Arn}'
                 - !Sub '${BlueprintsBucket.Arn}/*'
+
+  # Optional: RefineFunction with OpenCV Container Image (for maximum accuracy)
+  # Uncomment and set ImageUri parameter to use container image instead of zip deployment
+  # Requires building and pushing Docker image to ECR first (see scripts/build-refine-container.sh)
+  # RefineFunctionContainer:
+  #   Type: AWS::Serverless::Function
+  #   Properties:
+  #     FunctionName: DungeonCrawlerBlueprints-Refine-Container
+  #     PackageType: Image
+  #     ImageUri: !Sub '${RefineFunctionECR.RepositoryUri}:latest'
+  #     Timeout: 60
+  #     MemorySize: 2048
+  #     Events:
+  #       RefineApiContainer:
+  #         Type: Api
+  #         Properties:
+  #           RestApiId: !Ref BlueprintsApi
+  #           Path: /refine/{job_id}
+  #           Method: post
+  #           Auth:
+  #             ApiKeyRequired: true
+  #     Policies:
+  #       - DynamoDBCrudPolicy:
+  #           TableName: !Ref JobsTable
+  #       - Version: '2012-10-17'
+  #         Statement:
+  #           - Effect: Allow
+  #             Action:
+  #               - s3:GetObject
+  #               - s3:ListBucket
+  #             Resource:
+  #               - !Sub '${BlueprintsBucket.Arn}'
+  #               - !Sub '${BlueprintsBucket.Arn}/*'
 
 Outputs:
   ApiUrl:
@@ -362,4 +440,10 @@ Outputs:
     Value: !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:dungeoncrawler/openrouter-api-key-*'
     Export:
       Name: !Sub '${AWS::StackName}-SecretArn'
+
+  RefineFunctionECRRepositoryUri:
+    Description: ECR Repository URI for RefineFunction container image (optional upgrade)
+    Value: !Sub '${RefineFunctionECR.RepositoryUri}'
+    Export:
+      Name: !Sub '${AWS::StackName}-RefineFunctionECR'
 

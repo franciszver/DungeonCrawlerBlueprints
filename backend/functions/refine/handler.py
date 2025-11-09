@@ -13,6 +13,7 @@ if shared_path not in sys.path:
 from edge_detector import refine_room_boundaries
 from cors import get_cors_headers
 from config import get_dynamodb_table, get_s3_bucket
+from refinement_cache import get_cached_refinement, cache_refinement, get_image_hash
 
 dynamodb = boto3.resource('dynamodb')
 s3_client = boto3.client('s3')
@@ -99,6 +100,39 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 'body': json.dumps({'error': 'No rooms found to refine'})
             }
         
+        # Check cache first
+        image_hash = get_image_hash(image_base64)
+        cached_result = get_cached_refinement(job_id, threshold, image_hash)
+        
+        if cached_result:
+            # Return cached result
+            refined_rooms = cached_result.get('refined_rooms', all_rooms)
+            num_original = len(rooms)
+            num_extended = len(extended_rooms)
+            num_modified = len(modified_rooms)
+            
+            refined_original = refined_rooms[:num_original]
+            refined_extended = refined_rooms[num_original:num_original + num_extended]
+            refined_modified = refined_rooms[num_original + num_extended:]
+            
+            response_body = {
+                'success': True,
+                'rooms': refined_original,
+                'extended_rooms': refined_extended,
+                'modified_rooms': refined_modified,
+                'stats': cached_result.get('stats', {}),
+                'cached': True
+            }
+            
+            if 'method' in cached_result:
+                response_body['method'] = cached_result['method']
+            
+            return {
+                'statusCode': 200,
+                'headers': get_cors_headers(),
+                'body': json.dumps(response_body, default=str)
+            }
+        
         # Perform edge detection refinement
         result = refine_room_boundaries(
             image_base64,
@@ -163,17 +197,36 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             ExpressionAttributeValues=expression_values
         )
         
+        # Cache the result for future requests
+        cache_refinement(
+            job_id,
+            threshold,
+            image_hash,
+            {
+                'refined_rooms': refined_rooms,
+                'stats': result['stats'],
+                'method': result.get('method', 'PIL')
+            }
+        )
+        
         # Return refined rooms
+        response_body = {
+            'success': True,
+            'rooms': refined_original,
+            'extended_rooms': refined_extended,
+            'modified_rooms': refined_modified,
+            'stats': result['stats'],
+            'cached': False
+        }
+        
+        # Include method if available (PIL or OpenCV)
+        if 'method' in result:
+            response_body['method'] = result['method']
+        
         return {
             'statusCode': 200,
             'headers': get_cors_headers(),
-            'body': json.dumps({
-                'success': True,
-                'rooms': refined_original,
-                'extended_rooms': refined_extended,
-                'modified_rooms': refined_modified,
-                'stats': result['stats']
-            }, default=str)
+            'body': json.dumps(response_body, default=str)
         }
         
     except Exception as e:

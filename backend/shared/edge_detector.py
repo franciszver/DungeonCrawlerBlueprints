@@ -1,9 +1,25 @@
-"""Edge detection module for refining room boundaries using OpenCV."""
-from typing import List, Dict, Any, Tuple, Optional
+"""Edge detection module for refining room boundaries.
+
+Uses PIL-based lightweight edge detection as primary method (works out of box).
+OpenCV is optional upgrade for maximum accuracy (requires container image).
+"""
+from typing import List, Dict, Any, Tuple, Optional, TYPE_CHECKING
 import base64
 from io import BytesIO
+import logging
 
-# Try to import OpenCV and PIL - make them optional
+if TYPE_CHECKING:
+    import numpy as np
+
+# Import lightweight PIL-based detector (primary)
+try:
+    from edge_detector_lightweight import refine_room_boundaries_lightweight
+    PIL_AVAILABLE = True
+except ImportError:
+    PIL_AVAILABLE = False
+    refine_room_boundaries_lightweight = None
+
+# Try to import OpenCV - optional upgrade
 try:
     import cv2
     import numpy as np
@@ -15,6 +31,8 @@ except ImportError:
     np = None
     Image = None
 
+logger = logging.getLogger(__name__)
+
 
 def refine_room_boundaries(
     image_base64: str,
@@ -24,6 +42,53 @@ def refine_room_boundaries(
 ) -> Dict[str, Any]:
     """
     Refine room boundaries by snapping polygon vertices to detected edges.
+    
+    Uses PIL-based lightweight detection as primary (works out of box).
+    Falls back to OpenCV if available (optional upgrade for maximum accuracy).
+    
+    Args:
+        image_base64: Base64-encoded blueprint image
+        rooms: List of rooms with polygon coordinates
+        threshold: Maximum distance (pixels) to snap vertices to edges
+        image_format: Image format (png, jpg, etc.)
+        
+    Returns:
+        Dictionary with refined rooms and metadata
+    """
+    # Try OpenCV first if available (optional upgrade for maximum accuracy)
+    if OPENCV_AVAILABLE:
+        try:
+            logger.info("Using OpenCV edge detection (optional upgrade)")
+            result = refine_room_boundaries_opencv(image_base64, rooms, threshold, image_format)
+            if result.get('success'):
+                result['method'] = 'OpenCV'
+                return result
+            else:
+                logger.warning(f"OpenCV edge detection failed: {result.get('error')}, falling back to PIL")
+        except Exception as e:
+            logger.warning(f"OpenCV edge detection error: {str(e)}, falling back to PIL")
+    
+    # Use PIL-based lightweight solution (primary/default)
+    if PIL_AVAILABLE and refine_room_boundaries_lightweight:
+        logger.info("Using PIL lightweight edge detection (default)")
+        return refine_room_boundaries_lightweight(image_base64, rooms, threshold, image_format)
+    
+    # If neither available, return error
+    return {
+        "success": False,
+        "error": "Edge detection unavailable. Neither PIL nor OpenCV is available. Please ensure Pillow is installed.",
+        "refined_rooms": rooms
+    }
+
+
+def refine_room_boundaries_opencv(
+    image_base64: str,
+    rooms: List[Dict[str, Any]],
+    threshold: int = 50,
+    image_format: str = 'png'
+) -> Dict[str, Any]:
+    """
+    Refine room boundaries using OpenCV (optional upgrade for maximum accuracy).
     
     Args:
         image_base64: Base64-encoded blueprint image
@@ -37,8 +102,8 @@ def refine_room_boundaries(
     if not OPENCV_AVAILABLE:
         return {
             "success": False,
-            "error": "OpenCV is not available. Edge detection requires OpenCV to be installed in the Lambda layer.",
-            "refined_rooms": rooms  # Return original rooms on error
+            "error": "OpenCV is not available. Use container image deployment for OpenCV support.",
+            "refined_rooms": rooms
         }
     
     try:
@@ -125,7 +190,8 @@ def refine_room_boundaries(
         return {
             "success": True,
             "refined_rooms": refined_rooms,
-            "stats": refinement_stats
+            "stats": refinement_stats,
+            "method": "OpenCV"
         }
         
     except Exception as e:
@@ -138,8 +204,8 @@ def refine_room_boundaries(
 
 def _snap_polygon_to_edges(
     polygon: List[List[float]],
-    edges: np.ndarray,
-    lines: np.ndarray,
+    edges: Any,  # np.ndarray when OpenCV available
+    lines: Any,  # np.ndarray when OpenCV available
     threshold: int
 ) -> Tuple[List[List[float]], Dict[str, Any]]:
     """
@@ -186,8 +252,8 @@ def _snap_polygon_to_edges(
 def _find_nearest_edge_point(
     x: int,
     y: int,
-    edges: np.ndarray,
-    lines: np.ndarray,
+    edges: Any,  # np.ndarray when OpenCV available
+    lines: Any,  # np.ndarray when OpenCV available
     threshold: int
 ) -> Tuple[Optional[Tuple[int, int]], float]:
     """

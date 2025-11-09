@@ -13,6 +13,7 @@ DungeonCrawlerBlueprints is an **AI-powered floor plan analysis and design tool*
 - **Realistic & Fantasy Modes**: Architectural patterns or dungeon generation
 - **Few-Shot Learning**: Improves with training examples from Hugging Face dataset
 - **Full Undo/Redo**: Complete history management for interactive editing
+- **Edge Detection**: Refine room boundaries by snapping to detected edges (PIL default, OpenCV optional)
 - **Export Options**: JSON, SVG, and rasterized images
 
 ### 📊 Performance Metrics
@@ -393,6 +394,7 @@ See [Training Data Guide](_docs/TRAINING_DATA.md) for details.
 **Deployment:**
 - [Amplify Deployment Guide](_docs/AMPLIFY_DEPLOYMENT.md) - Frontend deployment
 - [Deployment Checklist](_docs/DEPLOYMENT_CHECKLIST.md) - Complete checklist
+- [Deployment Guide](_docs/DEPLOYMENT_GUIDE.md) - Includes edge detection setup (PIL default, OpenCV optional)
 
 **Reference:**
 - [Mock Data Examples](_docs/MockData.md) - Sample data structures
