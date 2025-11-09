@@ -119,6 +119,9 @@ amplify-env-vars.txt
 
 _docs/previousChats/
 
+# HAR files (may contain sensitive session data)
+*.har
+
 # Scripts (local only)
 scripts/
 
