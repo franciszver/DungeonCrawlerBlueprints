@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { findNearestCorner, resizePolygon } from '../utils/geometryHelpers';
-import type { Room, Polygon } from '../types';
+import type { Room } from '../types';
 
 interface UseCanvasInteractionProps {
   rooms: Room[];
@@ -9,7 +9,7 @@ interface UseCanvasInteractionProps {
 }
 
 export const useCanvasInteraction = ({
-  rooms,
+  rooms: _rooms,
   onRoomModified,
   isInteractive,
 }: UseCanvasInteractionProps) => {

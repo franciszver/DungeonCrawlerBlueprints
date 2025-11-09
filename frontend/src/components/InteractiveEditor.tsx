@@ -2,7 +2,7 @@ import { useState, useCallback } from 'react';
 import RoomCanvas from './RoomCanvas';
 import RoomSuggestionPanel from './RoomSuggestionPanel';
 import { useRoomExtension } from '../hooks/useRoomExtension';
-import { useUndoRedo, createAddAction, createModifyAction, createDeleteAction } from '../hooks/useUndoRedo';
+import { useUndoRedo, createAddAction, createModifyAction } from '../hooks/useUndoRedo';
 import { useCanvasInteraction } from '../hooks/useCanvasInteraction';
 import type { Room, Door, HistoryAction } from '../types';
 
@@ -49,45 +49,32 @@ export default function InteractiveEditor({
     undoRedo.addAction(createModifyAction(updatedRoom, previousRoom));
   }, [allRooms, onExtendedRoomsChange]);
 
-  // Handle room deleted
-  const handleRoomDeleted = useCallback((roomId: string) => {
-    const room = extendedRooms.find(r => r.id === roomId);
-    if (!room) return;
-
-    setExtendedRooms(prev => {
-      const newRooms = prev.filter(r => r.id !== roomId);
-      onExtendedRoomsChange?.(newRooms);
-      return newRooms;
-    });
-    undoRedo.addAction(createDeleteAction(room));
-  }, [extendedRooms, onExtendedRoomsChange]);
-
   // Undo/Redo handlers
   const handleUndo = useCallback((action: HistoryAction) => {
-    if (action.type === 'add') {
-      setExtendedRooms(prev => prev.filter(r => r.id !== action.room.id));
+    if (action.type === 'add' && action.room) {
+      setExtendedRooms(prev => prev.filter(r => r.id !== action.room!.id));
     } else if (action.type === 'modify' && action.previousState) {
       if (action.previousState.is_extended) {
         setExtendedRooms(prev => prev.map(r => 
           r.id === action.previousState!.id ? action.previousState! : r
-        ));
+        ).filter((r): r is Room => r !== undefined));
       }
-    } else if (action.type === 'delete') {
-      setExtendedRooms(prev => [...prev, action.room]);
+    } else if (action.type === 'delete' && action.room) {
+      setExtendedRooms(prev => [...prev, action.room!]);
     }
   }, []);
 
   const handleRedo = useCallback((action: HistoryAction) => {
-    if (action.type === 'add') {
-      setExtendedRooms(prev => [...prev, action.room]);
-    } else if (action.type === 'modify') {
+    if (action.type === 'add' && action.room) {
+      setExtendedRooms(prev => [...prev, action.room!]);
+    } else if (action.type === 'modify' && action.room) {
       if (action.room.is_extended) {
         setExtendedRooms(prev => prev.map(r => 
-          r.id === action.room.id ? action.room : r
-        ));
+          r.id === action.room!.id ? action.room! : r
+        ).filter((r): r is Room => r !== undefined));
       }
-    } else if (action.type === 'delete') {
-      setExtendedRooms(prev => prev.filter(r => r.id !== action.room.id));
+    } else if (action.type === 'delete' && action.room) {
+      setExtendedRooms(prev => prev.filter(r => r.id !== action.room!.id));
     }
   }, []);
 
@@ -102,6 +89,19 @@ export default function InteractiveEditor({
     onUndo: handleUndo,
     onRedo: handleRedo,
   });
+
+  // Handle room deleted (TODO: Wire up to UI)
+  // const handleRoomDeleted = useCallback((roomId: string) => {
+  //   const room = extendedRooms.find(r => r.id === roomId);
+  //   if (!room) return;
+
+  //   setExtendedRooms(prev => {
+  //     const newRooms = prev.filter(r => r.id !== roomId);
+  //     onExtendedRoomsChange?.(newRooms);
+  //     return newRooms;
+  //   });
+  //   undoRedo.addAction(createDeleteAction(room));
+  // }, [extendedRooms, onExtendedRoomsChange, undoRedo]);
 
   const canvas = useCanvasInteraction({
     rooms: allRooms,

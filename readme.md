@@ -72,6 +72,64 @@ While AWS AI services are excellent for general-purpose tasks, OpenRouter's spec
 
 ---
 
+## 🚀 Quick Start & Deployment
+
+### Prerequisites
+- AWS Account with CLI configured
+- AWS SAM CLI installed
+- Node.js 18+ and npm
+- Python 3.13
+- OpenRouter API Key
+
+### Backend Deployment (5 minutes)
+
+```bash
+# 1. Store OpenRouter API key in AWS Secrets Manager
+aws secretsmanager create-secret \
+    --name dungeoncrawler/openrouter-api-key \
+    --secret-string '{"api_key":"your-key-here"}' \
+    --region us-east-1
+
+# 2. Build and deploy
+cd infrastructure
+sam build
+sam deploy --stack-name dungeoncrawler-blueprints --capabilities CAPABILITY_IAM --resolve-s3
+
+# 3. Get your API credentials
+aws cloudformation describe-stacks --stack-name dungeoncrawler-blueprints --query "Stacks[0].Outputs"
+```
+
+### Frontend Setup (2 minutes)
+
+```bash
+# 1. Configure environment
+cd frontend
+echo "VITE_API_URL=your-api-url" > .env
+echo "VITE_API_KEY=your-api-key" >> .env
+
+# 2. Install and build
+npm install
+npm run build
+
+# 3. Deploy (choose one):
+# - AWS Amplify: Connect GitHub repo
+# - Vercel: vercel --prod
+# - S3: aws s3 sync dist/ s3://your-bucket
+```
+
+### Test Your Deployment
+
+```powershell
+# PowerShell
+$apiUrl = "your-api-url"
+$apiKey = "your-api-key"
+Invoke-WebRequest -Uri "$apiUrl/health" -Headers @{"x-api-key"=$apiKey}
+```
+
+**📖 Full deployment guide:** See [DEPLOYMENT.md](DEPLOYMENT.md) for detailed instructions.
+
+---
+
 ## 3. Architecture (AWS + OpenRouter)
 DungeonCrawlerBlueprints uses a serverless architecture:
 - **AWS Services**:  
