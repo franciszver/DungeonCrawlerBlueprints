@@ -7,8 +7,6 @@ from typing import Dict, Any
 import sys
 import os
 
-# Add shared module to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../shared'))
 from cors import cors_response, handle_options_request, get_cors_headers
 
 s3_client = boto3.client('s3')
