@@ -5,6 +5,7 @@ import sys
 import os
 from datetime import datetime
 from typing import Dict, Any
+from decimal import Decimal
 
 # Add shared module to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../shared'))
@@ -14,6 +15,18 @@ from config import S3_BUCKET_NAME, DYNAMODB_TABLE_NAME
 
 s3_client = boto3.client('s3')
 dynamodb = boto3.resource('dynamodb')
+
+
+def convert_floats_to_decimal(obj):
+    """Convert all float values to Decimal for DynamoDB compatibility."""
+    if isinstance(obj, list):
+        return [convert_floats_to_decimal(item) for item in obj]
+    elif isinstance(obj, dict):
+        return {key: convert_floats_to_decimal(value) for key, value in obj.items()}
+    elif isinstance(obj, float):
+        return Decimal(str(obj))
+    else:
+        return obj
 
 
 def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
@@ -28,7 +41,13 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         }
     }
     """
+    import logging
+    logger = logging.getLogger()
+    logger.setLevel(logging.INFO)
+    
     try:
+        logger.info(f"Received event: {json.dumps(event)}")
+        
         # Parse request body
         if isinstance(event.get('body'), str):
             body = json.loads(event['body'])
@@ -131,22 +150,29 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         
         # Store results
         if detection_result.get('success'):
+            # Convert floats to Decimal for DynamoDB
+            rooms = convert_floats_to_decimal(detection_result.get('rooms', []))
+            metadata = convert_floats_to_decimal(detection_result.get('metadata', {}))
+            
             table.update_item(
                 Key={'job_id': job_id},
                 UpdateExpression='SET #status = :status, results = :results, metadata = :metadata, updated_at = :updated',
                 ExpressionAttributeNames={'#status': 'status'},
                 ExpressionAttributeValues={
                     ':status': 'completed',
-                    ':results': detection_result.get('rooms', []),
-                    ':metadata': detection_result.get('metadata', {}),
+                    ':results': rooms,
+                    ':metadata': metadata,
                     ':updated': datetime.utcnow().isoformat()
                 }
             )
         else:
             table.update_item(
                 Key={'job_id': job_id},
-                UpdateExpression='SET #status = :status, error = :error, error_code = :error_code, updated_at = :updated',
-                ExpressionAttributeNames={'#status': 'status'},
+                UpdateExpression='SET #status = :status, #error = :error, error_code = :error_code, updated_at = :updated',
+                ExpressionAttributeNames={
+                    '#status': 'status',
+                    '#error': 'error'  # 'error' is a DynamoDB reserved keyword
+                },
                 ExpressionAttributeValues={
                     ':status': 'failed',
                     ':error': detection_result.get('error', 'Unknown error'),
@@ -189,6 +215,11 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             }
             
     except Exception as e:
+        import traceback
+        error_trace = traceback.format_exc()
+        logger.error(f"Detection error: {str(e)}")
+        logger.error(f"Traceback: {error_trace}")
+        
         return {
             'statusCode': 500,
             'headers': {
@@ -197,7 +228,8 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             },
             'body': json.dumps({
                 'error': str(e),
-                'error_code': 'DETECTION_ERROR'
+                'error_code': 'DETECTION_ERROR',
+                'traceback': error_trace
             })
         }
 

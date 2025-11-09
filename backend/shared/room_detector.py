@@ -1,10 +1,16 @@
 """Core room detection logic."""
 import json
 import base64
-from io import BytesIO
-from PIL import Image
 from typing import Dict, Any, List
-from .openrouter_client import detect_rooms_from_image, normalize_coordinates
+import sys
+import os
+
+# Add shared module to path if not already there
+shared_path = os.path.join(os.path.dirname(__file__))
+if shared_path not in sys.path:
+    sys.path.insert(0, shared_path)
+
+from openrouter_client import detect_rooms_from_image, normalize_coordinates
 
 
 def process_blueprint_image(image_data: bytes, image_format: str = 'png') -> Dict[str, Any]:
@@ -22,10 +28,6 @@ def process_blueprint_image(image_data: bytes, image_format: str = 'png') -> Dic
     start_time = time.time()
     
     try:
-        # Load image to get dimensions
-        image = Image.open(BytesIO(image_data))
-        image_width, image_height = image.size
-        
         # Validate image size
         image_size_mb = len(image_data) / (1024 * 1024)
         if image_size_mb > 10:
@@ -36,15 +38,16 @@ def process_blueprint_image(image_data: bytes, image_format: str = 'png') -> Dic
                 "rooms": []
             }
         
-        # Convert image to base64
-        buffered = BytesIO()
-        image.save(buffered, format=image_format.upper() if image_format.upper() in ['PNG', 'JPEG'] else 'PNG')
-        image_base64 = base64.b64encode(buffered.getvalue()).decode('utf-8')
+        # Convert image to base64 (no PIL needed)
+        image_base64 = base64.b64encode(image_data).decode('utf-8')
+        
+        # Estimate dimensions (will be determined by OpenRouter)
+        image_width, image_height = 1000, 1000  # Default normalized dimensions
         
         # Detect rooms using OpenRouter
         detection_result = detect_rooms_from_image(image_base64, image_format)
         
-        if not detection_result.get("success", False"):
+        if not detection_result.get("success", False):
             return {
                 **detection_result,
                 "processing_time_ms": int((time.time() - start_time) * 1000),

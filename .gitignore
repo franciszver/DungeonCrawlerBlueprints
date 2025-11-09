@@ -11,6 +11,20 @@ __pycache__/
 dist/
 build/
 
+# Backend vendor dependencies (Lambda layers)
+backend/bin/
+backend/boto3/
+backend/botocore/
+backend/certifi/
+backend/charset_normalizer/
+backend/dateutil/
+backend/idna/
+backend/jmespath/
+backend/requests/
+backend/s3transfer/
+backend/six.py
+backend/urllib3/
+
 # Environment variables
 .env
 .env.local
@@ -30,6 +44,10 @@ Thumbs.db
 # AWS SAM
 .aws-sam/
 samconfig.toml.local
+
+# Lambda deployment packages
+lambda-deployment.zip
+*.zip
 
 # Logs
 *.log

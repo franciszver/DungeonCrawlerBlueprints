@@ -3,7 +3,15 @@ import json
 import requests
 import base64
 from typing import Dict, Any, List, Optional
-from .config import OPENROUTER_API_URL, OPENROUTER_MODEL, get_openrouter_api_key
+import sys
+import os
+
+# Add shared module to path if not already there
+shared_path = os.path.join(os.path.dirname(__file__))
+if shared_path not in sys.path:
+    sys.path.insert(0, shared_path)
+
+from config import OPENROUTER_API_URL, OPENROUTER_MODEL, get_openrouter_api_key
 
 
 def detect_rooms_from_image(image_base64: str, image_format: str = 'png') -> Dict[str, Any]:
