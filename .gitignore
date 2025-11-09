@@ -49,3 +49,13 @@ AMPLIFY_CREDENTIALS.txt
 amplify-env-vars.txt
 
 _docs/previousChats/
+
+# Scripts (local only)
+scripts/
+
+# Markdown files in root folder only
+/*.md
+
+# Text files in root folder only
+/*.txt
+!README.md
