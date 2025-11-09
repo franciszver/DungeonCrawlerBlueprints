@@ -1,16 +1,50 @@
 # Fix CORS for all API Gateway resources
-$apiId = "pr6y3dwk98"
-$region = "us-east-1"
-
-# Resources to configure
-$resources = @(
-    @{id="qe9xmy"; path="/upload"},
-    @{id="77d099"; path="/detect"},
-    @{id="7jywen"; path="/results/{id}"},
-    @{id="9dvjnh"; path="/health"},
-    @{id="gl821j"; path="/export/{id}"}
+# Usage: .\scripts\fix-cors-all.ps1 -ApiId YOUR_API_ID
+param(
+    [Parameter(Mandatory=$false)]
+    [string]$ApiId = "",
+    [string]$Region = "us-east-1"
 )
 
+if ([string]::IsNullOrWhiteSpace($ApiId)) {
+    Write-Host "Error: API Gateway ID required" -ForegroundColor Red
+    Write-Host "Usage: .\scripts\fix-cors-all.ps1 -ApiId YOUR_API_ID" -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "To get your API ID, run:" -ForegroundColor Cyan
+    Write-Host "  aws cloudformation describe-stacks --stack-name dungeoncrawler-blueprints --query 'Stacks[0].Outputs[?OutputKey==\`"ApiId\`"].OutputValue' --output text" -ForegroundColor White
+    exit 1
+}
+
+$apiId = $ApiId
+
+Write-Host "Fetching API Gateway resources..." -ForegroundColor Cyan
+$allResources = aws apigateway get-resources --rest-api-id $apiId --region $region --output json | ConvertFrom-Json
+
+# Filter resources to configure (only endpoints we care about)
+$endpointsToConfigure = @("/upload", "/detect", "/results", "/health", "/export")
+$resources = @()
+
+foreach ($resource in $allResources.items) {
+    $path = $resource.path
+    # Match exact paths or paths with parameters (e.g., /results/{id})
+    foreach ($endpoint in $endpointsToConfigure) {
+        if ($path -eq $endpoint -or $path -match "^$endpoint/") {
+            $resources += @{id=$resource.id; path=$path}
+            break
+        }
+    }
+}
+
+if ($resources.Count -eq 0) {
+    Write-Host "Warning: No matching resources found. Available resources:" -ForegroundColor Yellow
+    foreach ($resource in $allResources.items) {
+        Write-Host "  - $($resource.path) (ID: $($resource.id))" -ForegroundColor Gray
+    }
+    exit 1
+}
+
+Write-Host "Found $($resources.Count) resources to configure" -ForegroundColor Green
+Write-Host ""
 Write-Host "Configuring CORS for all API Gateway resources..." -ForegroundColor Yellow
 Write-Host ""
 

@@ -1,7 +1,31 @@
 # Configure CORS for API Gateway
-$apiId = "pr6y3dwk98"
-$resourceId = "qe9xmy"
-$region = "us-east-1"
+# Usage: .\scripts\configure-cors.ps1 -ApiId YOUR_API_ID -ResourceId YOUR_RESOURCE_ID
+
+param(
+    [Parameter(Mandatory=$false)]
+    [string]$ApiId = "",
+    [Parameter(Mandatory=$false)]
+    [string]$ResourceId = "",
+    [string]$Region = "us-east-1"
+)
+
+if ([string]::IsNullOrWhiteSpace($ApiId)) {
+    Write-Host "Error: API Gateway ID required" -ForegroundColor Red
+    Write-Host "Usage: .\scripts\configure-cors.ps1 -ApiId YOUR_API_ID -ResourceId YOUR_RESOURCE_ID" -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "To get your API ID and Resource IDs, run:" -ForegroundColor Cyan
+    Write-Host "  aws apigateway get-resources --rest-api-id YOUR_API_ID --region us-east-1" -ForegroundColor White
+    exit 1
+}
+
+if ([string]::IsNullOrWhiteSpace($ResourceId)) {
+    Write-Host "Error: Resource ID required" -ForegroundColor Red
+    Write-Host "Usage: .\scripts\configure-cors.ps1 -ApiId YOUR_API_ID -ResourceId YOUR_RESOURCE_ID" -ForegroundColor Yellow
+    exit 1
+}
+
+$apiId = $ApiId
+$resourceId = $ResourceId
 
 Write-Host "Configuring CORS for API Gateway..." -ForegroundColor Yellow
 Write-Host "API ID: $apiId" -ForegroundColor Gray

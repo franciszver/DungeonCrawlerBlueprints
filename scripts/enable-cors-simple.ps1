@@ -1,8 +1,23 @@
 # Simple CORS enablement using AWS CLI
 # This uses the AWS API Gateway CORS feature
+# Usage: .\scripts\enable-cors-simple.ps1 -ApiId YOUR_API_ID
 
-$apiId = "pr6y3dwk98"
-$region = "us-east-1"
+param(
+    [Parameter(Mandatory=$false)]
+    [string]$ApiId = "",
+    [string]$Region = "us-east-1"
+)
+
+if ([string]::IsNullOrWhiteSpace($ApiId)) {
+    Write-Host "Error: API Gateway ID required" -ForegroundColor Red
+    Write-Host "Usage: .\scripts\enable-cors-simple.ps1 -ApiId YOUR_API_ID" -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "To get your API ID, run:" -ForegroundColor Cyan
+    Write-Host "  aws cloudformation describe-stacks --stack-name dungeoncrawler-blueprints --query 'Stacks[0].Outputs[?OutputKey==\`"ApiId\`"].OutputValue' --output text" -ForegroundColor White
+    exit 1
+}
+
+$apiId = $ApiId
 
 Write-Host "Enabling CORS on API Gateway..." -ForegroundColor Yellow
 Write-Host "API ID: $apiId" -ForegroundColor Gray
