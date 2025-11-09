@@ -11,7 +11,7 @@ __pycache__/
 dist/
 build/
 
-# Backend vendor dependencies (Lambda layers)
+# Backend vendor dependencies (Lambda layers and installed packages)
 backend/bin/
 backend/boto3/
 backend/botocore/
@@ -24,6 +24,47 @@ backend/requests/
 backend/s3transfer/
 backend/six.py
 backend/urllib3/
+
+# Python package installations (all dist-info and package directories)
+backend/*.dist-info/
+backend/*.libs/
+backend/_multiprocess/
+backend/_yaml/
+backend/aiohappyeyeballs/
+backend/aiohttp/
+backend/aiosignal/
+backend/anyio/
+backend/attr/
+backend/attrs/
+backend/click/
+backend/colorama/
+backend/datasets/
+backend/dill/
+backend/filelock/
+backend/frozenlist/
+backend/fsspec/
+backend/h11/
+backend/hf_xet/
+backend/httpcore/
+backend/httpx/
+backend/huggingface_hub/
+backend/multidict/
+backend/multiprocess/
+backend/numpy/
+backend/packaging/
+backend/pandas/
+backend/propcache/
+backend/pyarrow/
+backend/pytz/
+backend/shellingham/
+backend/sniffio/
+backend/tqdm/
+backend/typer/
+backend/typing_extensions.py
+backend/tzdata/
+backend/xxhash/
+backend/yaml/
+backend/yarl/
 
 # Environment variables
 .env

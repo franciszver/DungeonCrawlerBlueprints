@@ -5,7 +5,7 @@ Description: DungeonCrawlerBlueprints - AI-powered room detection service
 Globals:
   Function:
     Timeout: 30
-    Runtime: python3.12
+    Runtime: python3.13
     MemorySize: 512
     Environment:
       Variables:
@@ -13,6 +13,16 @@ Globals:
         S3_BUCKET_NAME: !Ref BlueprintsBucket
         SECRETS_MANAGER_SECRET_NAME: dungeoncrawler/openrouter-api-key
         OPENROUTER_MODEL: openai/gpt-4o
+        # Multi-Model Detection
+        CONFIDENCE_THRESHOLD: '0.7'
+        MAX_RETRY_ATTEMPTS: '2'
+        # Detection Features
+        ENABLE_POLYGON_DETECTION: 'true'
+        ENABLE_DOOR_DETECTION: 'true'
+        FEW_SHOT_EXAMPLE_COUNT: '3'
+        # Canvas Limits
+        MAX_CANVAS_WIDTH: '2000'
+        MAX_CANVAS_HEIGHT: '2000'
 
 Resources:
   # API Gateway
@@ -216,6 +226,46 @@ Resources:
             Method: get
             Auth:
               ApiKeyRequired: true
+
+  ExtendFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: DungeonCrawlerBlueprints-Extend
+      CodeUri: ../backend
+      Handler: functions.extend.handler.lambda_handler
+      Timeout: 30
+      MemorySize: 1024
+      Events:
+        ExtendApi:
+          Type: Api
+          Properties:
+            RestApiId: !Ref BlueprintsApi
+            Path: /extend/{id}
+            Method: post
+            Auth:
+              ApiKeyRequired: true
+        ExtendApiOptions:
+          Type: Api
+          Properties:
+            RestApiId: !Ref BlueprintsApi
+            Path: /extend/{id}
+            Method: options
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref JobsTable
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:dungeoncrawler/openrouter-api-key-*'
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:ListBucket
+              Resource:
+                - !Sub '${BlueprintsBucket.Arn}'
+                - !Sub '${BlueprintsBucket.Arn}/*'
 
 Outputs:
   ApiUrl:

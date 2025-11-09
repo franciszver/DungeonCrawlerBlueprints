@@ -152,16 +152,20 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         if detection_result.get('success'):
             # Convert floats to Decimal for DynamoDB
             rooms = convert_floats_to_decimal(detection_result.get('rooms', []))
+            doors = convert_floats_to_decimal(detection_result.get('doors', []))
             metadata = convert_floats_to_decimal(detection_result.get('metadata', {}))
+            confidence = convert_floats_to_decimal(detection_result.get('confidence', 0.0))
             
             table.update_item(
                 Key={'job_id': job_id},
-                UpdateExpression='SET #status = :status, results = :results, metadata = :metadata, updated_at = :updated',
+                UpdateExpression='SET #status = :status, results = :results, doors = :doors, metadata = :metadata, confidence = :confidence, updated_at = :updated',
                 ExpressionAttributeNames={'#status': 'status'},
                 ExpressionAttributeValues={
                     ':status': 'completed',
                     ':results': rooms,
+                    ':doors': doors,
                     ':metadata': metadata,
+                    ':confidence': confidence,
                     ':updated': datetime.utcnow().isoformat()
                 }
             )
@@ -194,6 +198,8 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                     'blueprint_id': blueprint_id,
                     'status': 'completed',
                     'rooms': detection_result.get('rooms', []),
+                    'doors': detection_result.get('doors', []),
+                    'confidence': detection_result.get('confidence', 0.0),
                     'metadata': detection_result.get('metadata', {})
                 })
             }

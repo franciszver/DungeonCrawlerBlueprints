@@ -70,7 +70,10 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         
         if job.get('status') == 'completed':
             result['rooms'] = job.get('results', [])
+            result['doors'] = job.get('doors', [])
+            result['confidence'] = float(job.get('confidence', 0.0)) if job.get('confidence') else 0.0
             result['metadata'] = job.get('metadata', {})
+            result['extended_rooms'] = job.get('extended_rooms', [])
         elif job.get('status') == 'failed':
             result['error'] = job.get('error', 'Unknown error')
             result['error_code'] = job.get('error_code', 'UNKNOWN')

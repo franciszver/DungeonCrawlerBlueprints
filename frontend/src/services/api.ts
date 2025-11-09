@@ -1,5 +1,12 @@
 import axios from 'axios';
-import type { UploadResponse, DetectionResult } from '../types';
+import type { 
+  UploadResponse, 
+  DetectionResult, 
+  RoomExtensionRequest, 
+  RoomExtensionResponse,
+  GenerationMode,
+  Polygon 
+} from '../types';
 
 const API_URL = import.meta.env.VITE_API_URL || '';
 const API_KEY = import.meta.env.VITE_API_KEY || '';
@@ -54,6 +61,59 @@ export const exportResults = async (jobId: string, format: 'json' | 'svg' = 'jso
     responseType: 'blob',
   });
 
+  return response.data;
+};
+
+// Room Extension API Functions
+
+export const getRoomSuggestions = async (
+  jobId: string,
+  doorDirection: 'N' | 'S' | 'E' | 'W',
+  currentRoomType: string,
+  mode: GenerationMode = 'realistic'
+): Promise<RoomExtensionResponse> => {
+  const request: RoomExtensionRequest = {
+    action: 'suggest',
+    door_direction: doorDirection,
+    current_room_type: currentRoomType,
+    mode,
+  };
+
+  const response = await apiClient.post<RoomExtensionResponse>(`/extend/${jobId}`, request);
+  return response.data;
+};
+
+export const generateRoom = async (
+  jobId: string,
+  doorLocation: [number, number],
+  doorDirection: 'N' | 'S' | 'E' | 'W',
+  currentRoomType: string,
+  roomType?: string,
+  mode: GenerationMode = 'realistic'
+): Promise<RoomExtensionResponse> => {
+  const request: RoomExtensionRequest = {
+    action: 'generate',
+    door_location: doorLocation,
+    door_direction: doorDirection,
+    current_room_type: currentRoomType,
+    room_type: roomType,
+    mode,
+  };
+
+  const response = await apiClient.post<RoomExtensionResponse>(`/extend/${jobId}`, request);
+  return response.data;
+};
+
+export const validateRoomPlacement = async (
+  jobId: string,
+  roomPolygon: Polygon
+): Promise<RoomExtensionResponse> => {
+  const request: RoomExtensionRequest = {
+    action: 'validate',
+    room_polygon: roomPolygon,
+  };
+
+  const response = await apiClient.post<RoomExtensionResponse>(`/extend/${jobId}`, request);
   return response.data;
 };
 

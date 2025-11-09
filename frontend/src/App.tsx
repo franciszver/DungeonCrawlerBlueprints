@@ -106,6 +106,7 @@ function App() {
                 <ResultsViewer
                   result={detectionResult}
                   blueprintImage={blueprintImage}
+                  jobId={detectionResult.job_id}
                 />
                 {detectionResult.status === 'completed' && (
                   <ExportPanel jobId={detectionResult.job_id} />
