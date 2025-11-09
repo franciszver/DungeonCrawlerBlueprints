@@ -1,5 +1,4 @@
 import type { Room, Polygon } from '../types';
-import { polygonToBbox } from './geometryHelpers';
 
 export interface SizeWarning {
   type: 'size_mismatch' | 'unrealistic_ratio' | 'unrealistic_size';

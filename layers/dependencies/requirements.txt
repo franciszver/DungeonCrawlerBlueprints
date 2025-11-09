@@ -1,7 +1,8 @@
 boto3>=1.28.0
 requests>=2.31.0
-shapely>=2.0.2
-opencv-python-headless>=4.8.0
-Pillow>=10.0.0
-numpy>=1.24.0
+# Note: Shapely, numpy, and opencv-python-headless are too large for Lambda layer (250MB limit)
+# These features will gracefully degrade if dependencies are not available:
+# - Polygon collision detection falls back to bounding box checks
+# - Edge detection returns an error message
+# To enable these features, add them as separate layers or use lighter alternatives
 

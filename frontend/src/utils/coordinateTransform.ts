@@ -24,8 +24,8 @@ export const screenToSVG = (
   
   // Account for zoom and pan
   // When zoomed, the viewBox is smaller, so coordinates need adjustment
-  const viewBox = svgElement.viewBox.baseVal;
-  const rect = svgElement.getBoundingClientRect();
+  // Note: viewBox and rect are available but not directly used here as the
+  // matrixTransform already accounts for the viewBox transform
   
   // Calculate the actual SVG coordinate accounting for viewBox transform
   const svgX = (svgP.x - panX) / zoom;

@@ -180,9 +180,10 @@ export default function InteractiveEditor({
   const [overlapWarning, setOverlapWarning] = useState(false);
   const [snapEnabled, setSnapEnabled] = useState(false);
   const [gridSize] = useState(20); // 20 units grid
+  const [hoveredEdge, setHoveredEdge] = useState<{ roomId: string; edgeIndex: number } | null>(null);
 
   // Handle corner added callback
-  const handleCornerAdded = useCallback((room: Room, vertexIndex: number) => {
+  const handleCornerAdded = useCallback((room: Room, _vertexIndex: number) => {
     // Update room in appropriate state
     if (room.is_extended) {
       setExtendedRooms(prev => prev.map(r => r.id === room.id ? room : r));
@@ -247,7 +248,7 @@ export default function InteractiveEditor({
   };
 
   // Handle minimap navigation
-  const handleMinimapNavigate = useCallback((x: number, y: number) => {
+  const handleMinimapNavigate = useCallback((_x: number, _y: number) => {
     // For now, just reset zoom/pan and let user manually navigate
     // TODO: Add setPan function to useZoomPan hook
     zoomPan.resetZoom();
@@ -306,7 +307,7 @@ export default function InteractiveEditor({
     } else {
       setHoveredEdge(null);
     }
-  }, [mode, canvas]);
+  }, [mode, canvas, setHoveredEdge]);
 
   // Handle edge click for door addition
   const handleEdgeClick = useCallback((event: React.MouseEvent<SVGElement>, room: Room) => {
@@ -417,7 +418,7 @@ export default function InteractiveEditor({
   }, [doors]);
 
   // Debounced persistence to backend
-  const persistTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const persistTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   
   const persistToBackend = useCallback(() => {
     if (persistTimeoutRef.current) {
@@ -447,7 +448,7 @@ export default function InteractiveEditor({
   }, [modifiedOriginalRooms, extendedRooms, allDoors, persistToBackend]);
 
   // Debounced size validation (2-3 seconds after edits)
-  const validationTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const validationTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   
   useEffect(() => {
     if (validationTimeoutRef.current) {
@@ -750,7 +751,7 @@ export default function InteractiveEditor({
         onMouseUp={canvas.handleMouseUp}
         onDoorDelete={handleDoorDelete}
         addDoorMode={mode === 'addDoor'}
-        hoveredEdge={canvas.hoveredEdge}
+        hoveredEdge={hoveredEdge}
         dragPreview={canvas.dragPreview}
         isDragging={canvas.isDragging}
         isMovingRoom={canvas.isMovingRoom}

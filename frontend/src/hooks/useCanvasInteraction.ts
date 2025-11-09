@@ -9,9 +9,7 @@ import {
   snapPointToGrid,
   findNearestEdge,
   insertVertexInPolygon,
-  getEdgePerpendicularVector,
-  projectPointOntoLine,
-  getEdgeDirection
+  getEdgePerpendicularVector
 } from '../utils/geometryHelpers';
 import type { Room } from '../types';
 

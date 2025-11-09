@@ -102,8 +102,9 @@ export default function RoomCanvas({
 
   // Handle mouse events - combine pan and room interactions
   const handleMouseDown = (event: React.MouseEvent<SVGElement>, room?: Room) => {
-    // Check if this is a pan gesture (middle mouse or spacebar)
-    if (onPanStart && (event.button === 1 || event.getModifierState('Space'))) {
+    // Check if this is a pan gesture (middle mouse)
+    // Spacebar panning is handled via keyboard events in useZoomPan hook
+    if (onPanStart && event.button === 1) {
       onPanStart(event);
     } else if (room && onMouseDown) {
       onMouseDown(event, room);

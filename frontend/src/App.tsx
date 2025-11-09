@@ -12,8 +12,7 @@ function App() {
   const [blueprintImage, setBlueprintImage] = useState<string>('');
   const [error, setError] = useState<string>('');
   const [isPolling, setIsPolling] = useState(false);
-  const [pollingAttempt, setPollingAttempt] = useState(0);
-  const [pollingMaxAttempts] = useState(180); // 6 minutes
+  const [, setPollingAttempt] = useState(0);
 
   const handleUploadComplete = async (result: UploadResponse) => {
     setUploadResult(result);
@@ -26,7 +25,7 @@ function App() {
       const detectResult = await detectRooms(
         result.blueprint_id, 
         result.job_id,
-        (current, total) => {
+        (current, _total) => {
           setPollingAttempt(current);
         }
       );

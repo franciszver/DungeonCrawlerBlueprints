@@ -1,10 +1,19 @@
 """Edge detection module for refining room boundaries using OpenCV."""
-import cv2
-import numpy as np
 from typing import List, Dict, Any, Tuple, Optional
 import base64
 from io import BytesIO
-from PIL import Image
+
+# Try to import OpenCV and PIL - make them optional
+try:
+    import cv2
+    import numpy as np
+    from PIL import Image
+    OPENCV_AVAILABLE = True
+except ImportError:
+    OPENCV_AVAILABLE = False
+    cv2 = None
+    np = None
+    Image = None
 
 
 def refine_room_boundaries(
@@ -25,6 +34,13 @@ def refine_room_boundaries(
     Returns:
         Dictionary with refined rooms and metadata
     """
+    if not OPENCV_AVAILABLE:
+        return {
+            "success": False,
+            "error": "OpenCV is not available. Edge detection requires OpenCV to be installed in the Lambda layer.",
+            "refined_rooms": rooms  # Return original rooms on error
+        }
+    
     try:
         # Decode image
         image_data = base64.b64decode(image_base64)
