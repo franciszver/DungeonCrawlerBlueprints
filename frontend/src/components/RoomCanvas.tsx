@@ -91,6 +91,7 @@ export default function RoomCanvas({
     if (isDragging) {
       return isMovingRoom ? 'move' : 'nwse-resize';
     }
+    if (hoveredEdge && !addDoorMode) return 'ns-resize'; // indicate edge can be dragged
     if (hoveredRoom) return 'move';
     return 'default';
   };
@@ -270,31 +271,69 @@ export default function RoomCanvas({
                 })()
               )}
 
-              {/* Room label */}
+              {/* Room label - use label_position if available (for generated rooms), otherwise use center */}
               {room.name_hint && (() => {
-                const center = room.polygon 
-                  ? getBboxCenter([
-                      Math.min(...room.polygon.map(p => p[0])),
-                      Math.min(...room.polygon.map(p => p[1])),
-                      Math.max(...room.polygon.map(p => p[0])),
-                      Math.max(...room.polygon.map(p => p[1])),
-                    ])
-                  : getBboxCenter(room.bounding_box);
+                // Use label_position if available (for label-based generated rooms)
+                // Otherwise use polygon/bbox center
+                let labelPos: [number, number];
+                if ((room as any).label_position && Array.isArray((room as any).label_position) && (room as any).label_position.length === 2) {
+                  // Label positions are normalized to 0-1000, scale to match image dimensions
+                  const normalizedX = (room as any).label_position[0];
+                  const normalizedY = (room as any).label_position[1];
+                  // Scale from normalized (0-1000) to actual image dimensions
+                  const scaleX = imageDimensions.width / 1000;
+                  const scaleY = imageDimensions.height / 1000;
+                  labelPos = [normalizedX * scaleX, normalizedY * scaleY];
+                } else {
+                  const center = room.polygon 
+                    ? getBboxCenter([
+                        Math.min(...room.polygon.map(p => p[0])),
+                        Math.min(...room.polygon.map(p => p[1])),
+                        Math.max(...room.polygon.map(p => p[0])),
+                        Math.max(...room.polygon.map(p => p[1])),
+                      ])
+                    : getBboxCenter(room.bounding_box);
+                  // Scale room center if coordinates are normalized (0-1000)
+                  const maxCoord = Math.max(
+                    ...(room.polygon?.flat() || room.bounding_box || [0, 0, 0, 0])
+                  );
+                  if (maxCoord <= 1000 && imageDimensions.width > 1000) {
+                    // Coordinates are normalized, scale them
+                    const scaleX = imageDimensions.width / 1000;
+                    const scaleY = imageDimensions.height / 1000;
+                    labelPos = [center[0] * scaleX, center[1] * scaleY];
+                  } else {
+                    labelPos = center;
+                  }
+                }
                 
                 return (
-                  <text
-                    x={center[0]}
-                    y={center[1]}
-                    textAnchor="middle"
-                    dominantBaseline="middle"
-                    fill="#1e40af"
-                    fontSize="14"
-                    fontWeight="600"
-                    fontFamily="Arial, sans-serif"
-                    pointerEvents="none"
-                  >
-                    {room.name_hint}
-                  </text>
+                  <g>
+                    {/* Background rectangle for better readability */}
+                    <rect
+                      x={labelPos[0] - 40}
+                      y={labelPos[1] - 10}
+                      width={80}
+                      height={20}
+                      fill="white"
+                      fillOpacity="0.8"
+                      stroke="none"
+                      pointerEvents="none"
+                    />
+                    <text
+                      x={labelPos[0]}
+                      y={labelPos[1]}
+                      textAnchor="middle"
+                      dominantBaseline="middle"
+                      fill="#1e40af"
+                      fontSize="14"
+                      fontWeight="600"
+                      fontFamily="Arial, sans-serif"
+                      pointerEvents="none"
+                    >
+                      {room.name_hint}
+                    </text>
+                  </g>
                 );
               })()}
 
@@ -372,25 +411,6 @@ export default function RoomCanvas({
         ))}
       </svg>
 
-      {/* Legend */}
-      <div className="absolute bottom-4 left-4 bg-white rounded-lg shadow-lg p-3 text-sm">
-        <div className="space-y-2">
-          <div className="flex items-center gap-2">
-            <div className="w-4 h-4 bg-blue-500 rounded"></div>
-            <span>Detected Rooms</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <div className="w-4 h-4 bg-green-500 rounded"></div>
-            <span>Extended Rooms</span>
-          </div>
-          {isInteractive && (
-            <div className="flex items-center gap-2">
-              <div className="w-4 h-4 bg-red-500 rounded-full"></div>
-              <span>Doors (click to add room)</span>
-            </div>
-          )}
-        </div>
-      </div>
     </div>
   );
 }

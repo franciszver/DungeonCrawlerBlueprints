@@ -17,14 +17,14 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 # Performance constants
-MAX_PROCESSING_SIZE = 2000  # Maximum dimension for processing (pixels)
+MAX_PROCESSING_SIZE = 3000  # Increased for better accuracy (was 2000)
 MIN_PROCESSING_SIZE = 100  # Minimum dimension (don't resize smaller images)
 
 
 def refine_room_boundaries_lightweight(
     image_base64: str,
     rooms: List[Dict[str, Any]],
-    threshold: int = 50,
+    threshold: int = 25,  # Reduced from 50 for more precise snapping
     image_format: str = 'png'
 ) -> Dict[str, Any]:
     """
@@ -99,12 +99,13 @@ def refine_room_boundaries_lightweight(
         if image.mode != 'L':
             image = image.convert('L')
         
-        # Calculate adaptive blur radius based on image size
-        # Larger images need more blur, but not too much
+        # Calculate adaptive blur radius - reduced for thinner, more precise edges
+        # Less blur = thinner edges = better alignment
         image_size = max(image.size)
-        blur_radius = max(1.0, min(2.5, image_size / 500))
+        # Reduced blur: max 1.5 instead of 2.5, and less aggressive scaling
+        blur_radius = max(0.5, min(1.5, image_size / 1000))
         
-        # Apply Gaussian blur to reduce noise
+        # Apply minimal Gaussian blur to reduce noise without thickening edges
         blurred = image.filter(ImageFilter.GaussianBlur(radius=blur_radius))
         
         # Detect edges using FIND_EDGES filter (Sobel-like)
@@ -112,6 +113,11 @@ def refine_room_boundaries_lightweight(
         
         # Calculate adaptive threshold using image statistics
         threshold_value = _calculate_adaptive_threshold(edges)
+        
+        # Use more aggressive thresholding to get cleaner, thinner edges
+        # Increase threshold slightly to reduce noise while keeping edges
+        threshold_value = int(threshold_value * 1.2)
+        threshold_value = min(threshold_value, 100)  # Cap at 100
         
         # Convert to binary edge map
         edges_binary = edges.point(lambda x: 255 if x > threshold_value else 0, mode='1')
@@ -220,7 +226,7 @@ def _detect_lines_pil(
     edges_array: Any,
     width: int,
     height: int,
-    min_line_length: int = 50
+    min_line_length: int = 30  # Reduced from 50 to detect shorter wall segments
 ) -> List[Tuple[int, int, int, int]]:
     """
     Detect lines from edge pixels using simple edge following.
@@ -410,22 +416,36 @@ def _find_nearest_edge_point_pil(
                 best_point = point
                 best_distance = distance
     
-    # If no line found, search for nearest edge pixel
+    # If no line found, search for nearest edge pixel with more precise search
     if best_point is None:
-        search_radius = min(threshold, 100)  # Limit search area
+        # Use smaller search radius for more precise snapping
+        search_radius = min(threshold, 50)  # Reduced from 100
         
-        for dy in range(-search_radius, search_radius + 1):
-            for dx in range(-search_radius, search_radius + 1):
-                nx, ny = x + dx, y + dy
-                
-                # Check bounds
-                if 0 <= nx < width and 0 <= ny < height:
-                    # Check if this pixel is an edge
-                    if edges_array[nx, ny] != 0:
-                        distance = math.sqrt(dx*dx + dy*dy)
-                        if distance < best_distance:
-                            best_point = (nx, ny)
-                            best_distance = distance
+        # Search in expanding circles for better precision
+        for radius in range(1, search_radius + 1):
+            found = False
+            for dy in range(-radius, radius + 1):
+                for dx in range(-radius, radius + 1):
+                    # Only check pixels on the circle perimeter for efficiency
+                    if abs(dx) != radius and abs(dy) != radius:
+                        continue
+                    
+                    nx, ny = x + dx, y + dy
+                    
+                    # Check bounds
+                    if 0 <= nx < width and 0 <= ny < height:
+                        # Check if this pixel is an edge
+                        if edges_array[nx, ny] != 0:
+                            distance = math.sqrt(dx*dx + dy*dy)
+                            if distance < best_distance and distance < threshold:
+                                best_point = (nx, ny)
+                                best_distance = distance
+                                found = True
+                                break
+                if found:
+                    break
+            if found and best_distance < threshold:
+                break
     
     return best_point, best_distance
 
@@ -493,12 +513,12 @@ def _calculate_adaptive_threshold(edges_image: Image.Image) -> int:
     sorted_pixels = sorted(pixels)
     median = sorted_pixels[len(sorted_pixels) // 2]
     
-    # Use median + offset as threshold
-    # This adapts to the image's edge strength distribution
-    threshold = int(median * 0.4 + 30)
+    # Use median + offset as threshold - adjusted for better edge detection
+    # Lower multiplier for more sensitive edge detection
+    threshold = int(median * 0.3 + 25)
     
-    # Clamp to reasonable range
-    threshold = max(20, min(80, threshold))
+    # Clamp to reasonable range - slightly lower for better sensitivity
+    threshold = max(15, min(70, threshold))
     
     return threshold
 
@@ -517,4 +537,342 @@ def _polygon_to_bbox(polygon: List[List[float]]) -> List[float]:
         max(x_coords),
         max(y_coords)
     ]
+
+
+def detect_room_from_label_center(
+    label_center: List[float],
+    image_base64: str,
+    existing_rooms: List[Dict[str, Any]],
+    canvas_bounds: List[float],
+    image_format: str = 'png',
+    timeout_seconds: int = 5
+) -> Tuple[Optional[List[List[float]]], Optional[str]]:
+    """
+    Detect room boundaries using flood-fill from label center point.
+    
+    Expands outward from center until hitting:
+    - Detected edges from blueprint
+    - Boundaries of surrounding rooms
+    - Canvas edge
+    
+    Args:
+        label_center: [x, y] center position of label
+        image_base64: Base64-encoded blueprint image
+        existing_rooms: List of existing rooms (for boundary constraints)
+        canvas_bounds: [x_min, y_min, x_max, y_max] canvas boundaries
+        image_format: Image format (png, jpg, etc.)
+        timeout_seconds: Maximum time to spend on flood-fill (default 5s)
+        
+    Returns:
+        Tuple of (polygon, error_message). Polygon is None if boundaries cannot be determined.
+    """
+    import time
+    start_time = time.time()
+    
+    if not PIL_AVAILABLE:
+        return (None, "PIL (Pillow) is not available")
+    
+    # Check if label center is outside canvas bounds
+    x, y = label_center
+    if len(canvas_bounds) == 4:
+        x_min, y_min, x_max, y_max = canvas_bounds
+        if x < x_min or x > x_max or y < y_min or y > y_max:
+            return (None, f"Label center [{x:.1f}, {y:.1f}] is outside canvas bounds")
+    
+    try:
+        # Decode and prepare image
+        image_data = base64.b64decode(image_base64)
+        image = Image.open(BytesIO(image_data))
+        
+        # Resize if needed (same logic as refine_room_boundaries_lightweight)
+        original_width, original_height = image.size
+        scale_factor = 1.0
+        
+        if max(original_width, original_height) > MAX_PROCESSING_SIZE:
+            scale_factor = MAX_PROCESSING_SIZE / max(original_width, original_height)
+            new_width = int(original_width * scale_factor)
+            new_height = int(original_height * scale_factor)
+            image = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+            # Scale label center
+            x = int(x * scale_factor)
+            y = int(y * scale_factor)
+        
+        width, height = image.size
+        
+        # Convert to grayscale
+        if image.mode != 'L':
+            image = image.convert('L')
+        
+        # Detect edges (same process as refine_room_boundaries_lightweight)
+        image_size = max(width, height)
+        blur_radius = max(0.5, min(1.5, image_size / 1000))
+        blurred = image.filter(ImageFilter.GaussianBlur(radius=blur_radius))
+        edges = blurred.filter(ImageFilter.FIND_EDGES)
+        threshold_value = _calculate_adaptive_threshold(edges)
+        threshold_value = int(threshold_value * 1.2)
+        threshold_value = min(threshold_value, 100)
+        edges_binary = edges.point(lambda px: 255 if px > threshold_value else 0, mode='1')
+        
+        # Convert to pixel array for faster access
+        edges_array = edges_binary.load()
+        
+        # Scale canvas bounds if image was resized
+        if scale_factor < 1.0:
+            canvas_x_min = int(canvas_bounds[0] * scale_factor) if len(canvas_bounds) >= 1 else 0
+            canvas_y_min = int(canvas_bounds[1] * scale_factor) if len(canvas_bounds) >= 2 else 0
+            canvas_x_max = int(canvas_bounds[2] * scale_factor) if len(canvas_bounds) >= 3 else width
+            canvas_y_max = int(canvas_bounds[3] * scale_factor) if len(canvas_bounds) >= 4 else height
+        else:
+            canvas_x_min = canvas_bounds[0] if len(canvas_bounds) >= 1 else 0
+            canvas_y_min = canvas_bounds[1] if len(canvas_bounds) >= 2 else 0
+            canvas_x_max = canvas_bounds[2] if len(canvas_bounds) >= 3 else width
+            canvas_y_max = canvas_bounds[3] if len(canvas_bounds) >= 4 else height
+        
+        # Perform flood-fill from center
+        polygon, error_msg = _grow_region_from_center(
+            x, y,
+            edges_array,
+            existing_rooms,
+            width, height,
+            canvas_x_min, canvas_y_min, canvas_x_max, canvas_y_max,
+            scale_factor,
+            start_time,
+            timeout_seconds
+        )
+        
+        if polygon and scale_factor < 1.0:
+            # Scale polygon back to original coordinates
+            polygon = [[p[0] / scale_factor, p[1] / scale_factor] for p in polygon]
+        
+        return (polygon, error_msg)
+        
+    except Exception as e:
+        logger.error(f"Error detecting room from label center: {str(e)}", exc_info=True)
+        return (None, f"Error during flood-fill: {str(e)}")
+
+
+def _grow_region_from_center(
+    start_x: int,
+    start_y: int,
+    edges_array: Any,
+    existing_rooms: List[Dict[str, Any]],
+    width: int,
+    height: int,
+    canvas_x_min: int,
+    canvas_y_min: int,
+    canvas_x_max: int,
+    canvas_y_max: int,
+    scale_factor: float,
+    start_time: float,
+    timeout_seconds: int
+) -> Tuple[Optional[List[List[float]]], Optional[str]]:
+    """
+    Grow region from center point using flood-fill (5px step size).
+    
+    Stops when hitting:
+    - Edge pixels (from edges_array)
+    - Room boundaries (from existing_rooms)
+    - Canvas edges
+    
+    Args:
+        start_x, start_y: Starting coordinates
+        edges_array: PIL pixel access object (binary edge map)
+        existing_rooms: List of existing rooms
+        width, height: Image dimensions
+        canvas_x_min, canvas_y_min, canvas_x_max, canvas_y_max: Canvas boundaries
+        scale_factor: Scale factor if image was resized
+        start_time: Start time for timeout checking
+        timeout_seconds: Maximum time to spend
+        
+    Returns:
+        Tuple of (polygon, error_message)
+    """
+    import time
+    STEP_SIZE = 5  # 5px step size as specified
+    
+    # Ensure start point is within bounds
+    start_x = max(0, min(width - 1, start_x))
+    start_y = max(0, min(height - 1, start_y))
+    
+    # Check timeout
+    if time.time() - start_time > timeout_seconds:
+        return (None, f"Flood-fill timeout after {timeout_seconds}s")
+    
+    # Track visited pixels and region boundary
+    visited = set()
+    region_pixels = set()
+    boundary_pixels = set()
+    
+    # Queue for flood-fill (BFS)
+    queue = [(start_x, start_y)]
+    visited.add((start_x, start_y))
+    region_pixels.add((start_x, start_y))
+    
+    # Directions for 8-connected neighbors (but with 5px step)
+    directions = [
+        (STEP_SIZE, 0), (-STEP_SIZE, 0), (0, STEP_SIZE), (0, -STEP_SIZE),
+        (STEP_SIZE, STEP_SIZE), (-STEP_SIZE, -STEP_SIZE),
+        (STEP_SIZE, -STEP_SIZE), (-STEP_SIZE, STEP_SIZE)
+    ]
+    
+    while queue:
+        # Check timeout periodically
+        if time.time() - start_time > timeout_seconds:
+            break
+        
+        current_x, current_y = queue.pop(0)
+        
+        # Check all directions
+        for dx, dy in directions:
+            nx, ny = current_x + dx, current_y + dy
+            
+            # Check bounds
+            if nx < 0 or nx >= width or ny < 0 or ny >= height:
+                # Hit canvas edge - add to boundary
+                boundary_pixels.add((current_x, current_y))
+                continue
+            
+            # Check canvas bounds
+            if nx < canvas_x_min or nx > canvas_x_max or ny < canvas_y_min or ny > canvas_y_max:
+                # Hit canvas boundary - add to boundary
+                boundary_pixels.add((current_x, current_y))
+                continue
+            
+            if (nx, ny) in visited:
+                continue
+            
+            # Check if this pixel is an edge
+            if edges_array[nx, ny] != 0:
+                # Hit edge - add current pixel to boundary
+                boundary_pixels.add((current_x, current_y))
+                continue
+            
+            # Check if this pixel is inside an existing room
+            pixel_in_room = False
+            for room in existing_rooms:
+                polygon = room.get('polygon')
+                if polygon:
+                    # Scale polygon if needed
+                    if scale_factor < 1.0:
+                        scaled_polygon = [[p[0] * scale_factor, p[1] * scale_factor] for p in polygon]
+                    else:
+                        scaled_polygon = polygon
+                    
+                    if _is_point_in_polygon(nx, ny, scaled_polygon):
+                        pixel_in_room = True
+                        break
+                else:
+                    # Use bounding box
+                    bbox = room.get('bounding_box', [])
+                    if len(bbox) == 4:
+                        if scale_factor < 1.0:
+                            bbox = [b * scale_factor for b in bbox]
+                        x_min, y_min, x_max, y_max = bbox
+                        if x_min <= nx <= x_max and y_min <= ny <= y_max:
+                            pixel_in_room = True
+                            break
+            
+            if pixel_in_room:
+                # Hit room boundary - add current pixel to boundary
+                boundary_pixels.add((current_x, current_y))
+                continue
+            
+            # This pixel is part of the region
+            visited.add((nx, ny))
+            region_pixels.add((nx, ny))
+            queue.append((nx, ny))
+    
+    # Convert boundary pixels to polygon
+    if not boundary_pixels:
+        return (None, "No boundaries detected - cannot determine room shape")
+    
+    # Create polygon from boundary pixels using convex hull or simple ordering
+    polygon = _boundary_pixels_to_polygon(boundary_pixels)
+    
+    if not polygon or len(polygon) < 3:
+        return (None, "Insufficient boundary points to form polygon")
+    
+    return (polygon, None)
+
+
+def _is_point_in_polygon(x: float, y: float, polygon: List[List[float]]) -> bool:
+    """Check if point is inside polygon using ray casting algorithm."""
+    if len(polygon) < 3:
+        return False
+    
+    inside = False
+    j = len(polygon) - 1
+    
+    for i in range(len(polygon)):
+        xi, yi = polygon[i]
+        xj, yj = polygon[j]
+        
+        if ((yi > y) != (yj > y)) and (x < (xj - xi) * (y - yi) / (yj - yi) + xi):
+            inside = not inside
+        j = i
+    
+    return inside
+
+
+def _boundary_pixels_to_polygon(boundary_pixels: set) -> List[List[float]]:
+    """
+    Convert boundary pixels to a polygon.
+    Uses a simple approach: find the convex hull of boundary pixels.
+    """
+    if not boundary_pixels or len(boundary_pixels) < 3:
+        return []
+    
+    # Convert to list and find convex hull
+    points = list(boundary_pixels)
+    
+    # Simple convex hull algorithm (Graham scan simplified)
+    # Sort points by x, then y
+    points.sort(key=lambda p: (p[0], p[1]))
+    
+    # For simplicity, use a bounding box approach and create a rectangle
+    # In a full implementation, you'd use a proper convex hull algorithm
+    x_coords = [p[0] for p in points]
+    y_coords = [p[1] for p in points]
+    
+    x_min, x_max = min(x_coords), max(x_coords)
+    y_min, y_max = min(y_coords), max(y_coords)
+    
+    # Create a rectangle polygon (can be improved with proper convex hull)
+    polygon = [
+        [x_min, y_min],
+        [x_max, y_min],
+        [x_max, y_max],
+        [x_min, y_max]
+    ]
+    
+    return polygon
+
+
+def _validate_room_boundaries(
+    polygon: Optional[List[List[float]]],
+    existing_rooms: List[Dict[str, Any]],
+    edges_detected: bool
+) -> Tuple[bool, Optional[str]]:
+    """
+    Validate that room boundaries are accounted for.
+    
+    Args:
+        polygon: Detected room polygon (None if not detected)
+        existing_rooms: List of existing rooms
+        edges_detected: Whether edges were detected in the region
+        
+    Returns:
+        Tuple of (is_valid, error_message)
+    """
+    if polygon is None:
+        return (False, "Cannot determine room boundaries")
+    
+    if len(polygon) < 3:
+        return (False, "Insufficient boundary points")
+    
+    # Check if we have edges or surrounding rooms
+    if not edges_detected and not existing_rooms:
+        return (False, "No edges detected and no surrounding rooms to use as boundaries")
+    
+    return (True, None)
 

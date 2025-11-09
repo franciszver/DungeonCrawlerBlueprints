@@ -33,6 +33,12 @@ export interface DetectionMetadata {
   processing_time_ms: number;
   timestamp: string;
   few_shot_examples_used?: number;
+  text_labels?: Array<{
+    text: string;
+    bbox: [number, number, number, number];
+    confidence: number;
+    original_text?: string;
+  }>;
 }
 
 export interface DetectionResult {

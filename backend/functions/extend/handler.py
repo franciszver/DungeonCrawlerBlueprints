@@ -1,6 +1,7 @@
 """Lambda handler for interactive room extension."""
 import json
 import boto3
+import base64
 import sys
 import os
 from datetime import datetime
@@ -11,12 +12,15 @@ from decimal import Decimal
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../shared'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../..'))
 
-from room_generator import generate_room, validate_room_placement, smart_room_placement
+from room_generator import generate_room, validate_room_placement, smart_room_placement, _calculate_scale_factor_from_existing_rooms
 from openrouter_client import suggest_room_type
-from config import DYNAMODB_TABLE_NAME, ENABLE_SMART_PLACEMENT
+from text_extractor import find_label_position_for_room_type, find_detected_room_for_type
+from config import DYNAMODB_TABLE_NAME, ENABLE_SMART_PLACEMENT, S3_BUCKET_NAME
 from cors import cors_response, handle_options_request
 
 dynamodb = boto3.resource('dynamodb')
+s3_client = boto3.client('s3')
+table = dynamodb.Table(DYNAMODB_TABLE_NAME)
 
 
 def _get_dimensions_for_room_type(room_type: str, mode: str) -> Dict[str, float]:
@@ -113,7 +117,6 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         mode = body.get('mode', 'realistic')
         
         # Get job from DynamoDB
-        table = dynamodb.Table(DYNAMODB_TABLE_NAME)
         response = table.get_item(Key={'job_id': job_id})
         
         if 'Item' not in response:
@@ -135,7 +138,150 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         all_rooms = existing_rooms + extended_rooms
         
         # Handle different actions
-        if action == 'suggest':
+        if action == 'generate-from-labels':
+            # Generate rooms from selected text labels
+            from label_room_generator import generate_rooms_from_selected_labels
+            from config import MAX_CANVAS_WIDTH, MAX_CANVAS_HEIGHT
+            
+            selected_label_indices = body.get('selected_label_indices', [])
+            generate_all = body.get('generate_all', False)
+            
+            # Get text labels from job metadata
+            metadata = job.get('metadata', {})
+            text_labels = metadata.get('text_labels', [])
+            
+            if not text_labels:
+                return {
+                    'statusCode': 400,
+                    'headers': {
+                        'Content-Type': 'application/json',
+                        'Access-Control-Allow-Origin': '*'
+                    },
+                    'body': json.dumps({
+                        'error': 'No text labels found in job metadata. Please ensure detection completed successfully.',
+                        'error_code': 'NO_TEXT_LABELS'
+                    })
+                }
+            
+            # Filter out labels already matched to detected rooms
+            matched_label_texts = set()
+            for room in existing_rooms:
+                if room.get('name_source') == 'blueprint_text':
+                    matched_label_texts.add(room.get('name_hint', '').lower())
+            
+            # Filter labels - skip those already matched
+            available_labels = []
+            for idx, label in enumerate(text_labels):
+                label_text = label.get('text', '').lower()
+                # Check if this label was already matched (check original_text if available)
+                original_text = label.get('original_text', label_text).lower()
+                if original_text not in matched_label_texts and label_text not in matched_label_texts:
+                    available_labels.append((idx, label))
+            
+            if not available_labels:
+                return {
+                    'statusCode': 400,
+                    'headers': {
+                        'Content-Type': 'application/json',
+                        'Access-Control-Allow-Origin': '*'
+                    },
+                    'body': json.dumps({
+                        'error': 'All labels have already been matched to detected rooms',
+                        'error_code': 'NO_AVAILABLE_LABELS'
+                    })
+                }
+            
+            # Determine which labels to generate
+            if generate_all:
+                label_indices_to_generate = [idx for idx, _ in available_labels]
+            else:
+                # Use selected indices, but filter to only available labels
+                available_indices = {idx for idx, _ in available_labels}
+                label_indices_to_generate = [idx for idx in selected_label_indices if idx in available_indices]
+            
+            if not label_indices_to_generate:
+                return {
+                    'statusCode': 400,
+                    'headers': {
+                        'Content-Type': 'application/json',
+                        'Access-Control-Allow-Origin': '*'
+                    },
+                    'body': json.dumps({
+                        'error': 'No valid labels selected for generation',
+                        'error_code': 'NO_LABELS_SELECTED'
+                    })
+                }
+            
+            # Get image from S3 for edge detection
+            s3_key = job.get('s3_key')
+            if not s3_key:
+                return {
+                    'statusCode': 400,
+                    'headers': {
+                        'Content-Type': 'application/json',
+                        'Access-Control-Allow-Origin': '*'
+                    },
+                    'body': json.dumps({
+                        'error': 'Image not found in job',
+                        'error_code': 'IMAGE_NOT_FOUND'
+                    })
+                }
+            
+            # Download image
+            s3_response = s3_client.get_object(Bucket=S3_BUCKET_NAME, Key=s3_key)
+            image_data = s3_response['Body'].read()
+            image_base64 = base64.b64encode(image_data).decode('utf-8')
+            
+            # Determine image format
+            file_ext = s3_key.split('.')[-1].lower()
+            image_format = 'png' if file_ext == 'png' else 'jpg'
+            
+            # Canvas bounds
+            canvas_bounds = [0, 0, MAX_CANVAS_WIDTH, MAX_CANVAS_HEIGHT]
+            
+            # Generate rooms from selected labels
+            result = generate_rooms_from_selected_labels(
+                image_base64,
+                label_indices_to_generate,
+                text_labels,
+                all_rooms,
+                canvas_bounds
+            )
+            
+            generated_rooms = result.get('rooms', [])
+            warnings = result.get('warnings', [])
+            
+            # Add generated rooms to extended_rooms
+            new_extended_rooms = extended_rooms + generated_rooms
+            
+            # Update job in DynamoDB
+            update_expression = 'SET extended_rooms = :extended_rooms, updated_at = :updated'
+            expression_values = {
+                ':extended_rooms': convert_floats_to_decimal(new_extended_rooms),
+                ':updated': datetime.utcnow().isoformat()
+            }
+            
+            table.update_item(
+                Key={'job_id': job_id},
+                UpdateExpression=update_expression,
+                ExpressionAttributeValues=expression_values
+            )
+            
+            return {
+                'statusCode': 200,
+                'headers': {
+                    'Content-Type': 'application/json',
+                    'Access-Control-Allow-Origin': '*'
+                },
+                'body': json.dumps({
+                    'job_id': job_id,
+                    'extended_rooms': new_extended_rooms,
+                    'generated_count': len(generated_rooms),
+                    'warnings': warnings
+                }, default=str)
+            }
+        
+        elif action == 'suggest':
             # Get room type suggestions
             if not door_direction or not current_room_type:
                 return {
@@ -165,7 +311,8 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             }
         
         elif action == 'generate':
-            # Generate a new room
+            # Generate a new room from door
+            # Uses blueprint-first approach: check surrounding boundaries first, use generic if none
             if not door_location or not door_direction:
                 return {
                     'statusCode': 400,
@@ -179,114 +326,95 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                     })
                 }
             
-            # Get room type and dimensions
+            # Get room type if not provided
             if room_type is None:
                 suggestions_result = suggest_room_type(current_room_type, door_direction, mode)
                 if suggestions_result.get("success") and suggestions_result.get("suggestions"):
                     suggestions = suggestions_result["suggestions"]
                     suggestions.sort(key=lambda x: x.get("probability", 0), reverse=True)
                     room_type = suggestions[0]["room_type"]
-                    dimensions = suggestions[0].get("typical_dimensions", {"width": 300, "height": 300})
                 else:
                     room_type = "Room"
-                    dimensions = {"width": 300, "height": 300}
-            else:
-                dimensions = _get_dimensions_for_room_type(room_type, mode)
             
-            # Use smart placement if enabled
-            if ENABLE_SMART_PLACEMENT:
-                # Get all existing rooms (including modified)
-                modified_rooms = job.get('modified_rooms', [])
-                all_existing_rooms = existing_rooms + extended_rooms + modified_rooms
-                
-                polygon = smart_room_placement(
-                    door_location,
-                    door_direction,
-                    dimensions,
-                    all_existing_rooms,
-                    room_type,
-                    mode
-                )
-                
-                if polygon is None:
-                    return {
-                        'statusCode': 400,
-                        'headers': {
-                            'Content-Type': 'application/json',
-                            'Access-Control-Allow-Origin': '*'
-                        },
-                        'body': json.dumps({
-                            'error': 'No valid placement found for room. Try a different door or adjust existing rooms.',
-                            'error_code': 'NO_VALID_PLACEMENT'
-                        })
-                    }
-                
-                # Create room from polygon
-                import uuid
-                room_id = f"extended_{uuid.uuid4().hex[:8]}"
-                bounding_box = [
-                    min(p[0] for p in polygon),
-                    min(p[1] for p in polygon),
-                    max(p[0] for p in polygon),
-                    max(p[1] for p in polygon)
-                ]
-                
-                new_room = {
-                    "id": room_id,
-                    "polygon": polygon,
-                    "bounding_box": bounding_box,
-                    "name_hint": room_type,
-                    "confidence": 0.95,
-                    "is_extended": True,
-                    "connected_door": {
-                        "location": door_location,
-                        "direction": door_direction
-                    }
+            # Get image from S3 for boundary detection
+            s3_key = job.get('s3_key')
+            if not s3_key:
+                return {
+                    'statusCode': 400,
+                    'headers': {
+                        'Content-Type': 'application/json',
+                        'Access-Control-Allow-Origin': '*'
+                    },
+                    'body': json.dumps({
+                        'error': 'Image not found in job',
+                        'error_code': 'IMAGE_NOT_FOUND'
+                    })
                 }
-            else:
-                # Use standard generation
-                generation_result = generate_room(
-                    door_location,
-                    door_direction,
-                    current_room_type,
-                    mode,
-                    room_type
-                )
-                
-                if not generation_result.get('success'):
-                    return {
-                        'statusCode': 500,
-                        'headers': {
-                            'Content-Type': 'application/json',
-                            'Access-Control-Allow-Origin': '*'
-                        },
-                        'body': json.dumps({
-                            'error': generation_result.get('error', 'Generation failed'),
-                            'error_code': generation_result.get('error_code', 'GENERATION_ERROR')
-                        })
-                    }
-                
-                new_room = generation_result['room']
-                
-                # Validate placement
-                validation_result = validate_room_placement(
-                    new_room['polygon'],
-                    all_rooms
-                )
-                
-                if not validation_result.get('valid'):
-                    return {
-                        'statusCode': 400,
-                        'headers': {
-                            'Content-Type': 'application/json',
-                            'Access-Control-Allow-Origin': '*'
-                        },
-                        'body': json.dumps({
-                            'error': validation_result.get('error', 'Invalid placement'),
-                            'error_code': 'INVALID_PLACEMENT',
-                            'overlapping_room_id': validation_result.get('overlapping_room_id')
-                        })
-                    }
+            
+            # Download image
+            s3_response = s3_client.get_object(Bucket=S3_BUCKET_NAME, Key=s3_key)
+            image_data = s3_response['Body'].read()
+            image_base64 = base64.b64encode(image_data).decode('utf-8')
+            
+            # Determine image format
+            file_ext = s3_key.split('.')[-1].lower()
+            image_format = 'png' if file_ext == 'png' else 'jpg'
+            
+            # Get all existing rooms (including modified)
+            modified_rooms = job.get('modified_rooms', [])
+            all_existing_rooms = existing_rooms + extended_rooms + modified_rooms
+            
+            # Canvas bounds
+            from config import MAX_CANVAS_WIDTH, MAX_CANVAS_HEIGHT
+            canvas_bounds = [0, 0, MAX_CANVAS_WIDTH, MAX_CANVAS_HEIGHT]
+            
+            # Use label-based room generator which checks boundaries first
+            from label_room_generator import generate_room_from_door
+            
+            generation_result = generate_room_from_door(
+                door_location,
+                door_direction,
+                room_type,
+                image_base64,
+                all_existing_rooms,
+                canvas_bounds,
+                mode
+            )
+            
+            if not generation_result.get('success'):
+                return {
+                    'statusCode': 500,
+                    'headers': {
+                        'Content-Type': 'application/json',
+                        'Access-Control-Allow-Origin': '*'
+                    },
+                    'body': json.dumps({
+                        'error': generation_result.get('error', 'Generation failed'),
+                        'error_code': 'GENERATION_ERROR'
+                    })
+                }
+            
+            new_room = generation_result['room']
+            
+            # Validate placement (check for overlaps)
+            validation_result = validate_room_placement(
+                new_room['polygon'],
+                all_existing_rooms
+            )
+            
+            if not validation_result.get('valid'):
+                return {
+                    'statusCode': 400,
+                    'headers': {
+                        'Content-Type': 'application/json',
+                        'Access-Control-Allow-Origin': '*'
+                    },
+                    'body': json.dumps({
+                        'error': validation_result.get('error', 'Invalid placement'),
+                        'error_code': 'INVALID_PLACEMENT',
+                        'overlapping_room_id': validation_result.get('overlapping_room_id')
+                    })
+                }
             
             # Add to extended rooms
             extended_rooms.append(new_room)

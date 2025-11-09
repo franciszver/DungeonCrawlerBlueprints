@@ -1,13 +1,14 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import RoomCanvas from './RoomCanvas';
 import RoomSuggestionPanel from './RoomSuggestionPanel';
+import RoomLabelPanel from './RoomLabelPanel';
 import Minimap from './Minimap';
 import { useRoomExtension } from '../hooks/useRoomExtension';
 import { useUndoRedo, createAddAction, createModifyAction } from '../hooks/useUndoRedo';
 import { useCanvasInteraction } from '../hooks/useCanvasInteraction';
 import { useZoomPan } from '../hooks/useZoomPan';
 import { findNearestEdge, calculateEdgeDirection } from '../utils/geometryHelpers';
-import { updatePlan, refineRoomBoundaries } from '../services/api';
+import { updatePlan, refineRoomBoundaries, getResults } from '../services/api';
 import { validateRoomSizes, type SizeWarning } from '../utils/roomValidator';
 import type { Room, Door, HistoryAction } from '../types';
 
@@ -41,6 +42,10 @@ export default function InteractiveEditor({
   const [dismissedWarnings, setDismissedWarnings] = useState<Set<string>>(new Set());
   const [minimapVisible, setMinimapVisible] = useState(false);
   const [imageDimensions, setImageDimensions] = useState({ width: 1000, height: 1000 });
+  const [controlsMenuOpen, setControlsMenuOpen] = useState(false);
+  const [textLabels, setTextLabels] = useState<any[]>([]);
+  const [labelPanelCollapsed, setLabelPanelCollapsed] = useState(false);
+  const [labelGenerationWarnings, setLabelGenerationWarnings] = useState<string[]>([]);
   
   // Combine rooms: unmodified originals + modified originals + extended rooms
   const allRooms = [
@@ -179,7 +184,7 @@ export default function InteractiveEditor({
 
   const [overlapWarning, setOverlapWarning] = useState(false);
   const [snapEnabled, setSnapEnabled] = useState(false);
-  const [gridSize] = useState(20); // 20 units grid
+  const [gridSize, setGridSize] = useState(20); // 20 units grid
   const [hoveredEdge, setHoveredEdge] = useState<{ roomId: string; edgeIndex: number } | null>(null);
 
   // Handle corner added callback
@@ -417,6 +422,106 @@ export default function InteractiveEditor({
     setAllDoors(doors || []);
   }, [doors]);
 
+  // Fetch text labels from job metadata
+  useEffect(() => {
+    const fetchTextLabels = async () => {
+      try {
+        const result = await getResults(jobId);
+        const labels = result.metadata?.text_labels || [];
+        setTextLabels(labels);
+      } catch (error) {
+        console.error('Error fetching text labels:', error);
+        setTextLabels([]);
+      }
+    };
+    
+    if (jobId) {
+      fetchTextLabels();
+    }
+  }, [jobId]);
+
+  // Handler for generating rooms from selected labels
+  const handleGenerateFromLabels = useCallback(async (selectedIndices: number[]): Promise<void> => {
+    setLabelGenerationWarnings([]);
+    
+    try {
+      const response = await fetch(`${import.meta.env.VITE_API_URL}/extend/${jobId}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': import.meta.env.VITE_API_KEY || '',
+        },
+        body: JSON.stringify({
+          action: 'generate-from-labels',
+          selected_label_indices: selectedIndices,
+        }),
+      });
+      
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Failed to generate rooms');
+      }
+      
+      const data = await response.json();
+      
+      // Update extended rooms
+      if (data.extended_rooms) {
+        setExtendedRooms(data.extended_rooms);
+        onExtendedRoomsChange?.(data.extended_rooms);
+      }
+      
+      // Show warnings if any
+      if (data.warnings && data.warnings.length > 0) {
+        setLabelGenerationWarnings(data.warnings);
+      }
+    } catch (error) {
+      console.error('Error generating rooms from labels:', error);
+      setLabelGenerationWarnings([error instanceof Error ? error.message : 'Failed to generate rooms']);
+      throw error; // Re-throw so panel can handle it
+    }
+  }, [jobId, onExtendedRoomsChange]);
+
+  // Handler for generating all rooms from labels
+  const handleGenerateAllFromLabels = useCallback(async (): Promise<void> => {
+    setLabelGenerationWarnings([]);
+    
+    try {
+      const response = await fetch(`${import.meta.env.VITE_API_URL}/extend/${jobId}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': import.meta.env.VITE_API_KEY || '',
+        },
+        body: JSON.stringify({
+          action: 'generate-from-labels',
+          generate_all: true,
+        }),
+      });
+      
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Failed to generate rooms');
+      }
+      
+      const data = await response.json();
+      
+      // Update extended rooms
+      if (data.extended_rooms) {
+        setExtendedRooms(data.extended_rooms);
+        onExtendedRoomsChange?.(data.extended_rooms);
+      }
+      
+      // Show warnings if any
+      if (data.warnings && data.warnings.length > 0) {
+        setLabelGenerationWarnings(data.warnings);
+      }
+    } catch (error) {
+      console.error('Error generating all rooms from labels:', error);
+      setLabelGenerationWarnings([error instanceof Error ? error.message : 'Failed to generate rooms']);
+      throw error; // Re-throw so panel can handle it
+    }
+  }, [jobId, onExtendedRoomsChange]);
+
   // Debounced persistence to backend
   const persistTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   
@@ -522,140 +627,160 @@ export default function InteractiveEditor({
   return (
     <div className="relative w-full h-full" style={{ userSelect: 'none', WebkitUserSelect: 'none' }}>
       {/* Left Vertical Controls */}
-      <div className="absolute top-4 left-4 z-10 flex flex-col gap-2">
-        {/* Generation Mode Toggle */}
+      <div className="absolute top-4 left-4 z-10 flex flex-col gap-2 w-[140px]">
+        {/* Controls Menu Toggle */}
         <button
-          onClick={roomExtension.toggleMode}
-          className="bg-white rounded-lg shadow-lg px-4 py-3 hover:bg-gray-50 transition-colors text-left"
-          title={`Generation Mode: ${roomExtension.mode === 'realistic' ? 'Realistic' : 'Fantasy'}`}
+          onClick={() => setControlsMenuOpen(!controlsMenuOpen)}
+          className="bg-white rounded-lg shadow-lg px-3 py-2 hover:bg-gray-50 transition-colors text-left flex items-center justify-between w-full"
+          title={controlsMenuOpen ? "Collapse menu" : "Expand menu"}
         >
           <div className="text-sm font-medium text-gray-700">
-            {roomExtension.mode === 'realistic' ? '🏢 Realistic' : '🏰 Fantasy'}
+            🛠️ Tools
           </div>
-          <div className="text-xs text-gray-500 mt-0.5">Mode</div>
+          <svg
+            className={`w-4 h-4 text-gray-500 transition-transform ${controlsMenuOpen ? 'rotate-180' : ''}`}
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+          </svg>
         </button>
 
-        {/* Add Door Mode Toggle */}
-        <button
-          onClick={() => setMode(mode === 'addDoor' ? 'normal' : 'addDoor')}
-          className={`rounded-lg shadow-lg px-4 py-3 transition-colors text-left ${
-            mode === 'addDoor' 
-              ? 'bg-blue-600 text-white' 
-              : 'bg-white hover:bg-gray-50'
-          }`}
-          title="Toggle Add Door Mode"
-        >
-          <div className={`text-sm font-medium ${mode === 'addDoor' ? 'text-white' : 'text-gray-700'}`}>
-            {mode === 'addDoor' ? '✓ Add Door' : '➕ Add Door'}
-          </div>
-          <div className={`text-xs mt-0.5 ${mode === 'addDoor' ? 'text-blue-100' : 'text-gray-500'}`}>
-            {mode === 'addDoor' ? 'Active' : 'Click to enable'}
-          </div>
-        </button>
-
-        {/* Snap to Grid Toggle */}
-        <button
-          onClick={() => setSnapEnabled(!snapEnabled)}
-          className={`rounded-lg shadow-lg px-4 py-3 transition-colors text-left ${
-            snapEnabled
-              ? 'bg-green-600 text-white'
-              : 'bg-white hover:bg-gray-50'
-          }`}
-          title={`Snap to Grid (${gridSize}px)`}
-        >
-          <div className={`flex items-center gap-2 text-sm font-medium ${snapEnabled ? 'text-white' : 'text-gray-700'}`}>
-            <svg 
-              className="w-4 h-4" 
-              fill="none" 
-              stroke="currentColor" 
-              viewBox="0 0 24 24"
+        {/* Collapsible Controls Menu */}
+        {controlsMenuOpen && (
+          <div className="bg-white rounded-lg shadow-lg p-2 flex flex-col gap-2 w-full">
+            {/* Add Door Mode Toggle */}
+            <button
+              onClick={() => setMode(mode === 'addDoor' ? 'normal' : 'addDoor')}
+              className={`rounded-md px-3 py-2 transition-colors text-left ${
+                mode === 'addDoor' 
+                  ? 'bg-blue-600 text-white' 
+                  : 'bg-gray-50 hover:bg-gray-100'
+              }`}
+              title="Toggle Add Door Mode"
             >
-              <path 
-                strokeLinecap="round" 
-                strokeLinejoin="round" 
-                strokeWidth={2} 
-                d="M4 4h4v4H4V4zm6 0h4v4h-4V4zm6 0h4v4h-4V4zM4 10h4v4H4v-4zm6 0h4v4h-4v-4zm6 0h4v4h-4v-4zM4 16h4v4H4v-4zm6 0h4v4h-4v-4zm6 0h4v4h-4v-4z" 
-              />
-            </svg>
-            {snapEnabled ? 'Snap ON' : 'Snap OFF'}
-          </div>
-          <div className={`text-xs mt-0.5 ${snapEnabled ? 'text-green-100' : 'text-gray-500'}`}>
-            Grid: {gridSize}px
-          </div>
-        </button>
+              <div className={`text-sm font-medium ${mode === 'addDoor' ? 'text-white' : 'text-gray-700'}`}>
+                {mode === 'addDoor' ? '✓ Add Door' : '➕ Add Door'}
+              </div>
+            </button>
 
-        {/* Refine Boundaries Button */}
-        <button
-          onClick={handleRefineBoundaries}
-          disabled={isRefining || allRooms.length === 0}
-          className={`rounded-lg shadow-lg px-4 py-3 transition-colors text-left ${
-            isRefining
-              ? 'bg-gray-300 cursor-wait'
-              : 'bg-white hover:bg-gray-50 disabled:bg-gray-100 disabled:cursor-not-allowed'
-          }`}
-          title="Refine room boundaries using edge detection"
-        >
-          <div className={`flex items-center gap-2 text-sm font-medium ${isRefining ? 'text-gray-600' : 'text-gray-700'}`}>
-            {isRefining ? (
-              <>
-                <svg className="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+            {/* Snap to Grid Toggle */}
+            <button
+              onClick={() => setSnapEnabled(!snapEnabled)}
+              className={`rounded-md px-3 py-2 transition-colors text-left ${
+                snapEnabled
+                  ? 'bg-green-600 text-white'
+                  : 'bg-gray-50 hover:bg-gray-100'
+              }`}
+              title={`Snap to Grid (${gridSize}px)`}
+            >
+              <div className={`flex items-center gap-2 text-sm font-medium ${snapEnabled ? 'text-white' : 'text-gray-700'}`}>
+                <svg 
+                  className="w-4 h-4" 
+                  fill="none" 
+                  stroke="currentColor" 
+                  viewBox="0 0 24 24"
+                >
+                  <path 
+                    strokeLinecap="round" 
+                    strokeLinejoin="round" 
+                    strokeWidth={2} 
+                    d="M4 4h4v4H4V4zm6 0h4v4h-4V4zm6 0h4v4h-4V4zM4 10h4v4H4v-4zm6 0h4v4h-4v-4zm6 0h4v4h-4v-4zM4 16h4v4H4v-4zm6 0h4v4h-4v-4zm6 0h4v4h-4v-4z" 
+                  />
                 </svg>
-                Refining...
-              </>
-            ) : (
-              <>
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-                </svg>
-                Refine Boundaries
-              </>
+                {snapEnabled ? 'Snap ON' : 'Snap OFF'}
+              </div>
+            </button>
+
+            {/* Grid Size Control */}
+            {snapEnabled && (
+              <div className="flex items-center gap-2 px-3 py-2 bg-gray-50 rounded-md">
+                <label className="text-xs text-gray-600 whitespace-nowrap">Grid:</label>
+                <input
+                  type="number"
+                  min="5"
+                  max="100"
+                  step="5"
+                  value={gridSize}
+                  onChange={(e) => {
+                    const value = parseInt(e.target.value, 10);
+                    if (!isNaN(value) && value >= 5 && value <= 100) {
+                      setGridSize(value);
+                    }
+                  }}
+                  className="w-full px-2 py-1 text-xs border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  title="Grid size in pixels"
+                />
+                <span className="text-xs text-gray-500">px</span>
+              </div>
             )}
-          </div>
-          <div className="text-xs mt-0.5 text-gray-500">
-            Snap to edges
-          </div>
-        </button>
 
-        {/* Add Corner Mode Toggle */}
-        <button
-          onClick={() => setMode(mode === 'addCorner' ? 'normal' : 'addCorner')}
-          className={`rounded-lg shadow-lg px-4 py-3 transition-colors text-left ${
-            mode === 'addCorner' 
-              ? 'bg-purple-600 text-white' 
-              : 'bg-white hover:bg-gray-50'
-          }`}
-          title="Toggle Add Corner Mode"
-        >
-          <div className={`text-sm font-medium ${mode === 'addCorner' ? 'text-white' : 'text-gray-700'}`}>
-            {mode === 'addCorner' ? '✓ Add Corner' : '📐 Add Corner'}
-          </div>
-          <div className={`text-xs mt-0.5 ${mode === 'addCorner' ? 'text-purple-100' : 'text-gray-500'}`}>
-            {mode === 'addCorner' ? 'Active' : 'Non-rectangular'}
-          </div>
-        </button>
+            {/* Refine Boundaries Button */}
+            <button
+              onClick={handleRefineBoundaries}
+              disabled={isRefining || allRooms.length === 0}
+              className={`rounded-md px-3 py-2 transition-colors text-left ${
+                isRefining
+                  ? 'bg-gray-300 cursor-wait'
+                  : 'bg-gray-50 hover:bg-gray-100 disabled:bg-gray-100 disabled:cursor-not-allowed'
+              }`}
+              title="Refine room boundaries using edge detection"
+            >
+              <div className={`flex items-center gap-2 text-sm font-medium ${isRefining ? 'text-gray-600' : 'text-gray-700'}`}>
+                {isRefining ? (
+                  <>
+                    <svg className="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                    </svg>
+                    Refining...
+                  </>
+                ) : (
+                  <>
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                    Refine Boundaries
+                  </>
+                )}
+              </div>
+            </button>
 
-        {/* Strict Mode Toggle */}
-        <button
-          onClick={() => setMode(mode === 'strictMode' ? 'normal' : 'strictMode')}
-          className={`rounded-lg shadow-lg px-4 py-3 transition-colors text-left ${
-            mode === 'strictMode' 
-              ? 'bg-indigo-600 text-white' 
-              : 'bg-white hover:bg-gray-50'
-          }`}
-          title="Toggle Strict Mode (perpendicular edge dragging)"
-        >
-          <div className={`text-sm font-medium ${mode === 'strictMode' ? 'text-white' : 'text-gray-700'}`}>
-            {mode === 'strictMode' ? '✓ Strict Mode' : '⊥ Strict Mode'}
+            {/* Add Corner Mode Toggle */}
+            <button
+              onClick={() => setMode(mode === 'addCorner' ? 'normal' : 'addCorner')}
+              className={`rounded-md px-3 py-2 transition-colors text-left ${
+                mode === 'addCorner' 
+                  ? 'bg-purple-600 text-white' 
+                  : 'bg-gray-50 hover:bg-gray-100'
+              }`}
+              title="Toggle Add Corner Mode"
+            >
+              <div className={`text-sm font-medium ${mode === 'addCorner' ? 'text-white' : 'text-gray-700'}`}>
+                {mode === 'addCorner' ? '✓ Add Corner' : '📐 Add Corner'}
+              </div>
+            </button>
+
+            {/* Strict Mode Toggle */}
+            <button
+              onClick={() => setMode(mode === 'strictMode' ? 'normal' : 'strictMode')}
+              className={`rounded-md px-3 py-2 transition-colors text-left ${
+                mode === 'strictMode' 
+                  ? 'bg-indigo-600 text-white' 
+                  : 'bg-gray-50 hover:bg-gray-100'
+              }`}
+              title="Toggle Strict Mode (perpendicular edge dragging)"
+            >
+              <div className={`text-sm font-medium ${mode === 'strictMode' ? 'text-white' : 'text-gray-700'}`}>
+                {mode === 'strictMode' ? '✓ Strict Mode' : '⊥ Strict Mode'}
+              </div>
+            </button>
           </div>
-          <div className={`text-xs mt-0.5 ${mode === 'strictMode' ? 'text-indigo-100' : 'text-gray-500'}`}>
-            {mode === 'strictMode' ? 'Active' : 'Edge dragging'}
-          </div>
-        </button>
+        )}
 
         {/* Undo/Redo */}
-        <div className="bg-white rounded-lg shadow-lg p-2 flex gap-1">
+        <div className="bg-white rounded-lg shadow-lg p-2 flex gap-1 w-full">
           <button
             onClick={undoRedo.undo}
             disabled={!undoRedo.canUndo}
@@ -673,59 +798,48 @@ export default function InteractiveEditor({
             ↷
           </button>
         </div>
-      </div>
 
-      {/* Stats */}
-      <div className="absolute top-4 right-4 z-10 bg-white rounded-lg shadow-lg p-3 text-sm">
-        <div className="space-y-1">
-          <div className="flex items-center justify-between gap-4">
-            <span className="text-gray-600">Original Rooms:</span>
-            <span className="font-semibold">{rooms.length}</span>
+        {/* Room Count Stats */}
+        <div className="bg-white rounded-lg shadow-lg p-3 text-sm w-full">
+          <div className="space-y-1">
+            <div className="flex items-center justify-between gap-4">
+              <span className="text-gray-600">Original:</span>
+              <span className="font-semibold">{rooms.length}</span>
+            </div>
+            <div className="flex items-center justify-between gap-4">
+              <span className="text-gray-600">Modified:</span>
+              <span className="font-semibold text-amber-600">{modifiedOriginalRooms.length}</span>
+            </div>
+            <div className="flex items-center justify-between gap-4">
+              <span className="text-gray-600">Extended:</span>
+              <span className="font-semibold text-green-600">{extendedRooms.length}</span>
+            </div>
+            <div className="flex items-center justify-between gap-4">
+              <span className="text-gray-600">Total:</span>
+              <span className="font-semibold">{allRooms.length}</span>
+            </div>
           </div>
-          <div className="flex items-center justify-between gap-4">
-            <span className="text-gray-600">Modified:</span>
-            <span className="font-semibold text-amber-600">{modifiedOriginalRooms.length}</span>
-          </div>
-          <div className="flex items-center justify-between gap-4">
-            <span className="text-gray-600">Extended Rooms:</span>
-            <span className="font-semibold text-green-600">{extendedRooms.length}</span>
-          </div>
-          <div className="flex items-center justify-between gap-4">
-            <span className="text-gray-600">Total:</span>
-            <span className="font-semibold">{allRooms.length}</span>
+        </div>
+
+        {/* Legend */}
+        <div className="bg-white rounded-lg shadow-lg p-2 text-xs w-full">
+          <div className="space-y-1.5">
+            <div className="flex items-center gap-1.5">
+              <div className="w-3 h-3 bg-blue-500 rounded flex-shrink-0"></div>
+              <span className="text-gray-700">Detected</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <div className="w-3 h-3 bg-green-500 rounded flex-shrink-0"></div>
+              <span className="text-gray-700">Extended</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <div className="w-3 h-3 bg-red-500 rounded-full flex-shrink-0"></div>
+              <span className="text-gray-700">Doors</span>
+            </div>
           </div>
         </div>
       </div>
 
-      {/* Zoom Controls */}
-      <div className="absolute top-4 right-4 z-10 bg-white rounded-lg shadow-lg p-2 mt-32">
-        <div className="flex flex-col items-center gap-1">
-          <button
-            onClick={zoomPan.zoomIn}
-            className="w-8 h-8 flex items-center justify-center bg-gray-100 hover:bg-gray-200 rounded transition-colors text-sm font-semibold"
-            title="Zoom In (Ctrl++)"
-          >
-            +
-          </button>
-          <div className="text-xs text-gray-600 font-medium px-2 py-1">
-            {Math.round(zoomPan.state.zoom * 100)}%
-          </div>
-          <button
-            onClick={zoomPan.zoomOut}
-            className="w-8 h-8 flex items-center justify-center bg-gray-100 hover:bg-gray-200 rounded transition-colors text-sm font-semibold"
-            title="Zoom Out (Ctrl+-)"
-          >
-            −
-          </button>
-          <button
-            onClick={zoomPan.resetZoom}
-            className="w-8 h-8 flex items-center justify-center bg-gray-100 hover:bg-gray-200 rounded transition-colors text-xs mt-1"
-            title="Fit to Screen (Ctrl+0)"
-          >
-            Fit
-          </button>
-        </div>
-      </div>
 
       {/* Canvas */}
       <RoomCanvas
@@ -742,9 +856,7 @@ export default function InteractiveEditor({
         onRoomMouseMove={
           mode === 'addDoor' 
             ? handleRoomMoveInAddDoorMode 
-            : mode === 'addCorner'
-            ? canvas.handleEdgeHover
-            : undefined
+            : canvas.handleEdgeHover
         }
         onMouseDown={mode === 'addDoor' ? handleEdgeClick : canvas.handleMouseDown}
         onMouseMove={canvas.handleMouseMove}
@@ -763,6 +875,20 @@ export default function InteractiveEditor({
         onPanMove={zoomPan.handlePanMove}
         onPanEnd={zoomPan.handlePanEnd}
       />
+
+      {/* Room Label Panel */}
+      {textLabels.length > 0 && (
+        <RoomLabelPanel
+          textLabels={textLabels}
+          existingRooms={rooms}
+          jobId={jobId}
+          onGenerate={handleGenerateFromLabels}
+          onGenerateAll={handleGenerateAllFromLabels}
+          isCollapsed={labelPanelCollapsed}
+          onToggleCollapse={() => setLabelPanelCollapsed(!labelPanelCollapsed)}
+          warnings={labelGenerationWarnings}
+        />
+      )}
 
       {/* Room Suggestion Panel */}
       {roomExtension.selectedDoor && (
@@ -808,21 +934,72 @@ export default function InteractiveEditor({
         </div>
       )}
 
-      {/* Minimap */}
-      <Minimap
-        rooms={allRooms}
-        blueprintImage={blueprintImage}
-        imageWidth={imageDimensions.width}
-        imageHeight={imageDimensions.height}
-        viewportBounds={viewportBounds}
-        onNavigate={handleMinimapNavigate}
-        isVisible={minimapVisible}
-        onToggle={() => setMinimapVisible(!minimapVisible)}
-      />
+      {/* Panning Controls (always visible) and Minimap */}
+      <div className="absolute bottom-4 left-4 z-10 flex items-end gap-2">
+        {/* Panning Controls - Always visible */}
+        <div className="bg-white rounded-lg shadow-lg p-2 border border-gray-300 w-[140px]">
+          {/* Zoom Controls Row */}
+          <div className="flex items-center gap-2 mb-2">
+            <button
+              onClick={zoomPan.zoomOut}
+              className="w-8 h-8 flex items-center justify-center bg-gray-100 hover:bg-gray-200 rounded transition-colors text-sm font-semibold"
+              title="Zoom Out (Ctrl+-)"
+            >
+              −
+            </button>
+            <div className="text-xs text-gray-600 font-medium px-2 min-w-[3rem] text-center">
+              {Math.round(zoomPan.state.zoom * 100)}%
+            </div>
+            <button
+              onClick={zoomPan.zoomIn}
+              className="w-8 h-8 flex items-center justify-center bg-gray-100 hover:bg-gray-200 rounded transition-colors text-sm font-semibold"
+              title="Zoom In (Ctrl++)"
+            >
+              +
+            </button>
+          </div>
+          {/* Fit Button Row */}
+          <div className="flex items-center mb-2">
+            <button
+              onClick={zoomPan.resetZoom}
+              className="w-full h-8 flex items-center justify-center bg-gray-100 hover:bg-gray-200 rounded transition-colors text-xs font-medium"
+              title="Fit to Screen (Ctrl+0)"
+            >
+              Fit
+            </button>
+          </div>
+          {/* Show Map Button Row */}
+          <div className="flex items-center">
+            <button
+              onClick={() => setMinimapVisible(!minimapVisible)}
+              className={`w-full h-8 flex items-center justify-center px-3 text-xs rounded transition-colors font-medium ${
+                minimapVisible
+                  ? 'bg-blue-100 text-blue-700 hover:bg-blue-200'
+                  : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+              }`}
+              title={minimapVisible ? 'Hide Map' : 'Show Map'}
+            >
+              {minimapVisible ? 'Hide Map' : 'Show Map'}
+            </button>
+          </div>
+        </div>
+
+        {/* Minimap - Shown when toggled */}
+        <Minimap
+          rooms={allRooms}
+          blueprintImage={blueprintImage}
+          imageWidth={imageDimensions.width}
+          imageHeight={imageDimensions.height}
+          viewportBounds={viewportBounds}
+          onNavigate={handleMinimapNavigate}
+          isVisible={minimapVisible}
+          onToggle={() => setMinimapVisible(!minimapVisible)}
+        />
+      </div>
 
       {/* Size Warnings Panel */}
       {sizeWarnings.length > 0 && (
-        <div className="absolute bottom-4 right-4 z-10 bg-yellow-50 border border-yellow-400 rounded-lg shadow-lg p-3 max-w-sm">
+        <div className="absolute top-4 right-4 z-10 bg-yellow-50 border border-yellow-400 rounded-lg shadow-lg p-3 max-w-sm">
           <div className="flex items-center justify-between mb-2">
             <h3 className="font-semibold text-sm text-yellow-800">
               ⚠️ Size Warnings ({sizeWarnings.length})
@@ -874,8 +1051,8 @@ export default function InteractiveEditor({
         </div>
       )}
 
-      {/* Help Text */}
-      <div className="absolute bottom-20 left-4 bg-white rounded-lg shadow-lg p-3 text-sm text-gray-600 max-w-xs">
+      {/* Help Text - Positioned on right to avoid overlapping with legend */}
+      <div className="absolute bottom-4 right-4 bg-white rounded-lg shadow-lg p-3 text-sm text-gray-600 max-w-xs z-10">
         <p className="font-semibold mb-1">💡 Interactive Mode Active</p>
         <ul className="space-y-1 text-xs">
           <li>• Click red dots to add rooms</li>

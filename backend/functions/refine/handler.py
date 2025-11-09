@@ -11,7 +11,7 @@ if shared_path not in sys.path:
     sys.path.insert(0, shared_path)
 
 from edge_detector import refine_room_boundaries
-from cors import get_cors_headers
+from cors import get_cors_headers, handle_options_request
 from config import get_dynamodb_table, get_s3_bucket
 from refinement_cache import get_cached_refinement, cache_refinement, get_image_hash
 
@@ -28,6 +28,10 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         "threshold": 50  // Optional: max snap distance in pixels
     }
     """
+    # Handle OPTIONS preflight request
+    if event.get('httpMethod') == 'OPTIONS' or event.get('requestContext', {}).get('http', {}).get('method') == 'OPTIONS':
+        return handle_options_request()
+    
     try:
         # Get job_id from path
         job_id = event.get('pathParameters', {}).get('job_id')
@@ -43,7 +47,7 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         if event.get('body'):
             body = json.loads(event['body'])
         
-        threshold = body.get('threshold', 50)
+        threshold = body.get('threshold', 25)  # Reduced default from 50 to 25 for more precise snapping
         
         # Get job from DynamoDB
         table = get_dynamodb_table()

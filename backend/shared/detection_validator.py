@@ -77,6 +77,27 @@ def validate_and_enhance_detection(
         len(overlaps) == 0
     )
     
+    # Resolve overlaps by adjusting room shapes (instead of removing)
+    if overlaps:
+        rooms = resolve_overlaps_by_adjusting_shapes(rooms, overlaps)
+        # Re-check overlaps after adjustment
+        remaining_overlaps = validate_overlaps(rooms)
+        validation_results["overlaps_detected"] = len(remaining_overlaps) > 0
+        validation_results["validation_passed"] = (
+            validation_results.get("coverage_score", 0) >= 0.85 and 
+            validation_results.get("room_count_adequate", False) and 
+            len(remaining_overlaps) == 0
+        )
+        # Update warning
+        if len(remaining_overlaps) == 0:
+            validation_results["warnings"] = [
+                w for w in validation_results.get("warnings", [])
+                if "overlap" not in w.lower()
+            ]
+            validation_results["warnings"].append(
+                f"Adjusted {len(overlaps)} overlapping room(s) to fit blueprint boundaries."
+            )
+    
     return rooms, validation_results
 
 
@@ -254,6 +275,171 @@ def validate_proportions(rooms: List[Dict[str, Any]]) -> List[str]:
             issues.append(room.get('id', 'unknown'))
     
     return issues
+
+
+def resolve_overlaps_by_adjusting_shapes(rooms: List[Dict[str, Any]], overlaps: List[Tuple[str, str]]) -> List[Dict[str, Any]]:
+    """
+    Resolve overlaps by adjusting room shapes to fit appropriately.
+    Shrinks or adjusts the overlapping room's boundaries to eliminate overlap.
+    
+    Args:
+        rooms: List of detected rooms
+        overlaps: List of (room_id1, room_id2) tuples with significant overlaps
+        
+    Returns:
+        List of rooms with adjusted shapes to eliminate overlaps
+    """
+    # Create a map of room_id to room for quick lookup
+    room_map = {room.get('id'): room for room in rooms}
+    
+    for room_id1, room_id2 in overlaps:
+        room1 = room_map.get(room_id1)
+        room2 = room_map.get(room_id2)
+        
+        if not room1 or not room2:
+            continue
+        
+        bbox1 = room1.get('bounding_box', [])
+        bbox2 = room2.get('bounding_box', [])
+        
+        if len(bbox1) != 4 or len(bbox2) != 4:
+            continue
+        
+        # Calculate overlap area
+        overlap_area = calculate_overlap_area(bbox1, bbox2)
+        area1 = (bbox1[2] - bbox1[0]) * (bbox1[3] - bbox1[1])
+        area2 = (bbox2[2] - bbox2[0]) * (bbox2[3] - bbox2[1])
+        
+        # Determine which room to adjust (prefer adjusting the larger or lower confidence one)
+        conf1 = room1.get('confidence', 0.5)
+        conf2 = room2.get('confidence', 0.5)
+        
+        # Adjust the room with lower confidence, or larger room if confidences are equal
+        if conf1 < conf2 or (conf1 == conf2 and area1 > area2):
+            room_to_adjust = room1
+            other_room = room2
+            room_id_to_adjust = room_id1
+        else:
+            room_to_adjust = room2
+            other_room = room1
+            room_id_to_adjust = room_id2
+        
+        # Store original bbox before adjustment
+        original_bbox = room_to_adjust.get('bounding_box', [])
+        
+        # Adjust the room's bounding box to eliminate overlap
+        adjusted_bbox = _adjust_bbox_to_remove_overlap(
+            original_bbox,
+            other_room.get('bounding_box', [])
+        )
+        
+        # Update the room's bounding box
+        room_to_adjust['bounding_box'] = adjusted_bbox
+        
+        # If room has a polygon, adjust it proportionally
+        if room_to_adjust.get('polygon') and len(original_bbox) == 4:
+            polygon = room_to_adjust['polygon']
+            # Calculate scale factors
+            old_width = original_bbox[2] - original_bbox[0]
+            old_height = original_bbox[3] - original_bbox[1]
+            new_width = adjusted_bbox[2] - adjusted_bbox[0]
+            new_height = adjusted_bbox[3] - adjusted_bbox[1]
+            
+            if old_width > 0 and old_height > 0:
+                scale_x = new_width / old_width
+                scale_y = new_height / old_height
+                
+                # Adjust polygon
+                adjusted_polygon = [
+                    [
+                        (p[0] - original_bbox[0]) * scale_x + adjusted_bbox[0],
+                        (p[1] - original_bbox[1]) * scale_y + adjusted_bbox[1]
+                    ]
+                    for p in polygon
+                ]
+                room_to_adjust['polygon'] = adjusted_polygon
+        
+        # Update room map
+        room_map[room_id_to_adjust] = room_to_adjust
+    
+    # Return updated rooms
+    return list(room_map.values())
+
+
+def _adjust_bbox_to_remove_overlap(bbox1: List[float], bbox2: List[float]) -> List[float]:
+    """
+    Adjust bbox1 to remove overlap with bbox2.
+    Shrinks bbox1 on the side(s) where overlap occurs.
+    
+    Returns:
+        Adjusted bounding box [x_min, y_min, x_max, y_max]
+    """
+    x1_min, y1_min, x1_max, y1_max = bbox1
+    x2_min, y2_min, x2_max, y2_max = bbox2
+    
+    # Calculate overlap
+    x_overlap = max(0, min(x1_max, x2_max) - max(x1_min, x2_min))
+    y_overlap = max(0, min(y1_max, y2_max) - max(y1_min, y2_min))
+    
+    if x_overlap == 0 and y_overlap == 0:
+        return bbox1  # No overlap
+    
+    # Determine which side to shrink (prefer shrinking the smaller overlap)
+    if x_overlap < y_overlap:
+        # Shrink horizontally
+        # Check which side has less space
+        left_space = x2_min - x1_min
+        right_space = x1_max - x2_max
+        
+        if left_space > 0 and right_space > 0:
+            # Shrink from the side with less space
+            if left_space < right_space:
+                x1_min = x2_max  # Move left edge to right
+            else:
+                x1_max = x2_min  # Move right edge to left
+        elif left_space > 0:
+            x1_min = x2_max
+        elif right_space > 0:
+            x1_max = x2_min
+        else:
+            # Overlap is complete, shrink proportionally
+            overlap_ratio = x_overlap / (x1_max - x1_min)
+            shrink_amount = (x1_max - x1_min) * overlap_ratio * 0.5
+            x1_min += shrink_amount
+            x1_max -= shrink_amount
+    else:
+        # Shrink vertically
+        top_space = y2_min - y1_min
+        bottom_space = y1_max - y2_max
+        
+        if top_space > 0 and bottom_space > 0:
+            if top_space < bottom_space:
+                y1_min = y2_max
+            else:
+                y1_max = y2_min
+        elif top_space > 0:
+            y1_min = y2_max
+        elif bottom_space > 0:
+            y1_max = y2_min
+        else:
+            # Overlap is complete, shrink proportionally
+            overlap_ratio = y_overlap / (y1_max - y1_min)
+            shrink_amount = (y1_max - y1_min) * overlap_ratio * 0.5
+            y1_min += shrink_amount
+            y1_max -= shrink_amount
+    
+    # Ensure minimum size (at least 50x50)
+    if x1_max - x1_min < 50:
+        center_x = (x1_min + x1_max) / 2
+        x1_min = center_x - 25
+        x1_max = center_x + 25
+    
+    if y1_max - y1_min < 50:
+        center_y = (y1_min + y1_max) / 2
+        y1_min = center_y - 25
+        y1_max = center_y + 25
+    
+    return [x1_min, y1_min, x1_max, y1_max]
 
 
 def should_retry_with_strict_mode(validation_results: Dict[str, Any]) -> bool:

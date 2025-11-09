@@ -58,12 +58,23 @@ export const useCanvasInteraction = ({
   ) => {
     if (!isInteractive || !room.polygon) return;
 
+    const svg = svgRef.current;
+    if (!svg) return;
+
+    // Check if click is on a door (don't interfere with door clicks)
+    const target = event.target as SVGElement;
+    // Check if target or any parent has the door-marker class
+    let element: SVGElement | null = target;
+    while (element && element !== svg) {
+      if (element.classList?.contains('door-marker') || element.getAttribute('class')?.includes('door-marker')) {
+        return; // Let door click handler process this
+      }
+      element = element.parentElement as SVGElement | null;
+    }
+
     // Prevent text selection and default drag behavior
     event.preventDefault();
     event.stopPropagation();
-
-    const svg = svgRef.current;
-    if (!svg) return;
 
     // Get mouse position in SVG coordinates
     const pt = svg.createSVGPoint();
@@ -110,31 +121,46 @@ export const useCanvasInteraction = ({
     // Find nearest corner (within 20px threshold)
     const cornerIndex = findNearestCorner(room.polygon, mousePos, 20);
     
-    // Strict Mode: Detect edge dragging
-    if (strictMode && cornerIndex === null) {
-      const edgeInfo = findNearestEdge(room.polygon, mousePos, 30);
-      if (edgeInfo) {
-        // Start dragging edge (perpendicular constraint will be applied in handleMouseMove)
-        setIsDragging(true);
-        setDraggedRoom(room);
-        setDraggedCornerIndex(null);
-        setDraggedEdgeIndex(edgeInfo.edgeIndex);
-        setIsMovingRoom(false);
-        setDragStartPos(mousePos);
-        return;
-      }
-    }
-    
+    // Priority 1: Corner dragging (highest priority)
     if (cornerIndex !== null) {
-      // Corner drag = resize
       setIsDragging(true);
       setDraggedRoom(room);
       setDraggedCornerIndex(cornerIndex);
       setDraggedEdgeIndex(null);
       setIsMovingRoom(false);
       event.stopPropagation();
-    } else if (isPointInPolygon(mousePos, room.polygon)) {
-      // Body drag = move
+      return;
+    }
+    
+    // Priority 2: Edge dragging (check before body drag)
+    const edgeInfo = findNearestEdge(room.polygon, mousePos, 30);
+    if (edgeInfo && !addCornerMode) {
+      // Strict Mode: Perpendicular edge dragging
+      if (strictMode) {
+        setIsDragging(true);
+        setDraggedRoom(room);
+        setDraggedCornerIndex(null);
+        setDraggedEdgeIndex(edgeInfo.edgeIndex);
+        setIsMovingRoom(false);
+        setDragStartPos(mousePos);
+        event.stopPropagation();
+        return;
+      }
+      // Normal edge dragging: resize by moving entire edge
+      else {
+        setIsDragging(true);
+        setDraggedRoom(room);
+        setDraggedCornerIndex(null);
+        setDraggedEdgeIndex(edgeInfo.edgeIndex);
+        setIsMovingRoom(false);
+        setDragStartPos(mousePos);
+        event.stopPropagation();
+        return;
+      }
+    }
+    
+    // Priority 3: Body drag = move (only if not on corner or edge)
+    if (isPointInPolygon(mousePos, room.polygon)) {
       setIsDragging(true);
       setDraggedRoom(room);
       setDraggedCornerIndex(null);
@@ -165,40 +191,63 @@ export const useCanvasInteraction = ({
 
     let updatedRoom: Room;
 
-    // Strict Mode: Perpendicular edge dragging
-    if (strictMode && draggedEdgeIndex !== null && dragStartPos) {
+    // Edge dragging: resize by moving entire edge
+    if (draggedEdgeIndex !== null && dragStartPos) {
       const edgeStart = draggedRoom.polygon[draggedEdgeIndex];
       const edgeEnd = draggedRoom.polygon[(draggedEdgeIndex + 1) % draggedRoom.polygon.length];
-      
-      // Get perpendicular direction
-      const perpDir = getEdgePerpendicularVector(edgeStart, edgeEnd);
       
       // Calculate movement vector
       const deltaX = currentPos[0] - dragStartPos[0];
       const deltaY = currentPos[1] - dragStartPos[1];
       
-      // Project movement onto perpendicular direction
-      const perpMovement = deltaX * perpDir[0] + deltaY * perpDir[1];
-      
-      // Move both vertices of the edge perpendicularly
-      const newPolygon = [...draggedRoom.polygon];
-      newPolygon[draggedEdgeIndex] = [
-        edgeStart[0] + perpMovement * perpDir[0],
-        edgeStart[1] + perpMovement * perpDir[1]
-      ];
-      newPolygon[(draggedEdgeIndex + 1) % newPolygon.length] = [
-        edgeEnd[0] + perpMovement * perpDir[0],
-        edgeEnd[1] + perpMovement * perpDir[1]
-      ];
-      
-      // Update bounding box
-      const newBbox = polygonToBbox(newPolygon);
-      
-      updatedRoom = {
-        ...draggedRoom,
-        polygon: newPolygon,
-        bounding_box: newBbox,
-      };
+      if (strictMode) {
+        // Strict Mode: Perpendicular edge dragging
+        // Get perpendicular direction
+        const perpDir = getEdgePerpendicularVector(edgeStart, edgeEnd);
+        
+        // Project movement onto perpendicular direction
+        const perpMovement = deltaX * perpDir[0] + deltaY * perpDir[1];
+        
+        // Move both vertices of the edge perpendicularly
+        const newPolygon = [...draggedRoom.polygon];
+        newPolygon[draggedEdgeIndex] = [
+          edgeStart[0] + perpMovement * perpDir[0],
+          edgeStart[1] + perpMovement * perpDir[1]
+        ];
+        newPolygon[(draggedEdgeIndex + 1) % newPolygon.length] = [
+          edgeEnd[0] + perpMovement * perpDir[0],
+          edgeEnd[1] + perpMovement * perpDir[1]
+        ];
+        
+        // Update bounding box
+        const newBbox = polygonToBbox(newPolygon);
+        
+        updatedRoom = {
+          ...draggedRoom,
+          polygon: newPolygon,
+          bounding_box: newBbox,
+        };
+      } else {
+        // Normal edge dragging: move entire edge freely
+        const newPolygon = [...draggedRoom.polygon];
+        newPolygon[draggedEdgeIndex] = [
+          edgeStart[0] + deltaX,
+          edgeStart[1] + deltaY
+        ];
+        newPolygon[(draggedEdgeIndex + 1) % newPolygon.length] = [
+          edgeEnd[0] + deltaX,
+          edgeEnd[1] + deltaY
+        ];
+        
+        // Update bounding box
+        const newBbox = polygonToBbox(newPolygon);
+        
+        updatedRoom = {
+          ...draggedRoom,
+          polygon: newPolygon,
+          bounding_box: newBbox,
+        };
+      }
     } else if (isMovingRoom && dragStartPos) {
       // Moving entire room
       const deltaX = currentPos[0] - dragStartPos[0];
@@ -290,12 +339,12 @@ export const useCanvasInteraction = ({
     }
   }, [isDragging, dragPreview, onRoomModified, onOverlapWarning]);
 
-  // Handle edge hover for Add Corner mode
+  // Handle edge hover for Add Corner mode and normal edge dragging
   const handleEdgeHover = useCallback((
     event: React.MouseEvent<SVGElement>,
     room: Room
   ) => {
-    if (!addCornerMode || !room.polygon) {
+    if (!isInteractive || !room.polygon) {
       setHoveredEdge(null);
       return;
     }
@@ -309,13 +358,27 @@ export const useCanvasInteraction = ({
     const svgP = pt.matrixTransform(svg.getScreenCTM()?.inverse());
     const mousePos: [number, number] = [svgP.x, svgP.y];
 
-    const edgeInfo = findNearestEdge(room.polygon, mousePos, 50);
+    // Check if we're near a corner first (corners take priority)
+    const cornerIndex = findNearestCorner(room.polygon, mousePos, 20);
+    if (cornerIndex !== null) {
+      setHoveredEdge(null);
+      return;
+    }
+
+    // Check if we're inside the polygon (body takes priority over edge)
+    if (isPointInPolygon(mousePos, room.polygon)) {
+      setHoveredEdge(null);
+      return;
+    }
+
+    // Check if we're near an edge (for dragging or adding corner)
+    const edgeInfo = findNearestEdge(room.polygon, mousePos, 30);
     if (edgeInfo) {
       setHoveredEdge({ roomId: room.id, edgeIndex: edgeInfo.edgeIndex });
     } else {
       setHoveredEdge(null);
     }
-  }, [addCornerMode]);
+  }, [isInteractive]);
 
   const handleRoomHover = useCallback((room: Room | null) => {
     if (!isInteractive) return;

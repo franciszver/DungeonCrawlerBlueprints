@@ -40,6 +40,10 @@ ENABLE_POLYGON_COLLISION = os.environ.get('ENABLE_POLYGON_COLLISION', 'true').lo
 ENABLE_SHAPED_ROOMS = os.environ.get('ENABLE_SHAPED_ROOMS', 'true').lower() == 'true'
 ENABLE_SMART_PLACEMENT = os.environ.get('ENABLE_SMART_PLACEMENT', 'true').lower() == 'true'
 
+# Processing Feature Flags (for performance)
+ENABLE_TEXT_EXTRACTION = os.environ.get('ENABLE_TEXT_EXTRACTION', 'true').lower() == 'true'
+ENABLE_AUTO_EDGE_REFINEMENT = os.environ.get('ENABLE_AUTO_EDGE_REFINEMENT', 'true').lower() == 'true'
+
 # Processing Limits
 MAX_IMAGE_SIZE_MB = 10
 MAX_PROCESSING_TIME_SECONDS = 30

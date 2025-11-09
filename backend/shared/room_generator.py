@@ -1,6 +1,7 @@
 """Procedural room generation for interactive floor plan extension."""
 import json
 import random
+import logging
 from typing import Dict, Any, List, Optional, Tuple
 import sys
 import os
@@ -16,6 +17,8 @@ from config import (
     ENABLE_SHAPED_ROOMS, ENABLE_SMART_PLACEMENT
 )
 
+logger = logging.getLogger(__name__)
+
 # Try to import Shapely for polygon collision detection
 try:
     from shapely.geometry import Polygon as ShapelyPolygon
@@ -26,7 +29,7 @@ except ImportError:
 
 def generate_room(door_location: List[float], door_direction: str,
                  current_room_type: str, mode: str = "realistic",
-                 room_type: Optional[str] = None) -> Dict[str, Any]:
+                 room_type: Optional[str] = None, scale_factor: float = 1.0) -> Dict[str, Any]:
     """
     Generate a new room connected to an existing door.
     
@@ -36,6 +39,7 @@ def generate_room(door_location: List[float], door_direction: str,
         current_room_type: Type of the room the door is in
         mode: "realistic" or "fantasy"
         room_type: Optional specific room type (if None, AI suggests)
+        scale_factor: Multiplier to scale dimensions to match blueprint (default: 1.0)
         
     Returns:
         Dictionary with generated room data
@@ -49,14 +53,19 @@ def generate_room(door_location: List[float], door_direction: str,
                 suggestions = suggestions_result["suggestions"]
                 suggestions.sort(key=lambda x: x.get("probability", 0), reverse=True)
                 room_type = suggestions[0]["room_type"]
-                dimensions = suggestions[0].get("typical_dimensions", {"width": 300, "height": 300})
+                # Scale AI-suggested dimensions to match blueprint
+                suggested_dims = suggestions[0].get("typical_dimensions", {"width": 300, "height": 300})
+                dimensions = {
+                    "width": suggested_dims["width"] * scale_factor,
+                    "height": suggested_dims["height"] * scale_factor
+                }
             else:
                 # Fallback
                 room_type = "Room"
-                dimensions = {"width": 300, "height": 300}
+                dimensions = {"width": 300 * scale_factor, "height": 300 * scale_factor}
         else:
-            # Use default dimensions for specified room type
-            dimensions = _get_default_dimensions(room_type, mode)
+            # Use default dimensions for specified room type, scaled to match blueprint
+            dimensions = _get_default_dimensions(room_type, mode, scale_factor)
         
         # Generate polygon based on door direction (with shape selection)
         polygon = _generate_shaped_room(
@@ -303,9 +312,18 @@ def _polygon_to_bbox(polygon: List[List[float]]) -> List[float]:
     ]
 
 
-def _get_default_dimensions(room_type: str, mode: str) -> Dict[str, float]:
-    """Get default dimensions for a room type."""
+def _get_default_dimensions(room_type: str, mode: str, scale_factor: float = 1.0) -> Dict[str, float]:
+    """
+    Get default dimensions for a room type, scaled to match blueprint.
     
+    Args:
+        room_type: Type of room (e.g., "Bedroom", "Kitchen")
+        mode: "realistic" or "fantasy"
+        scale_factor: Multiplier to scale dimensions to match blueprint (default: 1.0)
+        
+    Returns:
+        Dictionary with scaled width and height
+    """
     if mode == "fantasy":
         # Fantasy/dungeon dimensions
         dimensions_map = {
@@ -334,11 +352,17 @@ def _get_default_dimensions(room_type: str, mode: str) -> Dict[str, float]:
     
     base_dims = dimensions_map.get(room_type, {"width": 300, "height": 300})
     
-    # Apply size variation if enabled
-    if ENABLE_SIZE_VARIATION:
-        return _get_dimensions_with_variation(base_dims)
+    # Apply scale factor to match blueprint scale (before variation)
+    scaled_dims = {
+        "width": base_dims["width"] * scale_factor,
+        "height": base_dims["height"] * scale_factor
+    }
     
-    return base_dims
+    # Apply size variation if enabled (after scaling)
+    if ENABLE_SIZE_VARIATION:
+        return _get_dimensions_with_variation(scaled_dims)
+    
+    return scaled_dims
 
 
 def _get_dimensions_with_variation(base_dims: Dict[str, float]) -> Dict[str, float]:
@@ -348,6 +372,83 @@ def _get_dimensions_with_variation(base_dims: Dict[str, float]) -> Dict[str, flo
         "width": base_dims["width"] * variation,
         "height": base_dims["height"] * variation
     }
+
+
+def _calculate_scale_factor_from_existing_rooms(existing_rooms: List[Dict[str, Any]]) -> float:
+    """
+    Calculate scale factor by comparing default room sizes to actual room sizes.
+    Returns a multiplier to scale generated rooms to match blueprint scale.
+    
+    Uses median area (robust to outliers) and filters extreme outliers.
+    Only analyzes original detected rooms to match the blueprint's true scale.
+    
+    Args:
+        existing_rooms: List of original detected rooms (from job.results)
+        
+    Returns:
+        Scale factor (0.3 to 2.0) to apply to default dimensions
+    """
+    if not existing_rooms or len(existing_rooms) < 2:
+        return 1.0  # No scaling if not enough data
+    
+    # Calculate areas of existing rooms
+    areas = []
+    for room in existing_rooms:
+        bbox = room.get('bounding_box', [])
+        if len(bbox) == 4:
+            x_min, y_min, x_max, y_max = bbox
+            width = x_max - x_min
+            height = y_max - y_min
+            area = width * height
+            if area > 0:  # Skip invalid rooms
+                areas.append(area)
+    
+    if len(areas) < 2:
+        return 1.0
+    
+    # Calculate median area (more robust than mean)
+    sorted_areas = sorted(areas)
+    median_area = sorted_areas[len(sorted_areas) // 2]
+    
+    # Filter outliers: exclude rooms >3x or <0.3x the median
+    filtered_areas = [
+        area for area in areas
+        if 0.3 * median_area <= area <= 3.0 * median_area
+    ]
+    
+    if len(filtered_areas) < 2:
+        # If filtering removed too many, use original areas
+        filtered_areas = areas
+    
+    # Calculate average area of filtered rooms
+    avg_existing_area = sum(filtered_areas) / len(filtered_areas)
+    
+    # Calculate average of all default room sizes as reference
+    # This gives us a balanced reference point
+    default_dimensions = [
+        {"width": 350, "height": 400},  # Bedroom
+        {"width": 250, "height": 300},   # Bathroom
+        {"width": 400, "height": 350},   # Kitchen
+        {"width": 500, "height": 450},   # Living Room
+        {"width": 400, "height": 400},   # Dining Room
+        {"width": 150, "height": 400},   # Hallway
+        {"width": 200, "height": 150},   # Closet
+        {"width": 350, "height": 350},   # Office
+        {"width": 600, "height": 600},   # Garage
+        {"width": 200, "height": 250},   # Pantry
+    ]
+    default_areas = [d["width"] * d["height"] for d in default_dimensions]
+    avg_default_area = sum(default_areas) / len(default_areas)
+    
+    # Calculate scale factor (square root for linear scaling)
+    # If existing rooms are smaller, scale factor < 1.0
+    # If existing rooms are larger, scale factor > 1.0
+    scale_factor = (avg_existing_area / avg_default_area) ** 0.5
+    
+    # Clamp scale factor to reasonable range (0.3 to 2.0)
+    scale_factor = max(0.3, min(2.0, scale_factor))
+    
+    return scale_factor
 
 
 def _polygons_overlap(poly1: List[List[float]], poly2: List[List[float]]) -> bool:
@@ -443,69 +544,210 @@ def _generate_with_offset(door_location: List[float], door_direction: str,
 
 
 def _is_valid_placement(polygon: List[List[float]],
-                       existing_rooms: List[Dict[str, Any]]) -> bool:
-    """Check if polygon placement is valid (no overlaps, within bounds)."""
+                       existing_rooms: List[Dict[str, Any]]) -> Tuple[bool, Optional[str]]:
+    """
+    Check if polygon placement is valid (no overlaps, within bounds).
+    
+    Returns:
+        Tuple of (is_valid, error_message)
+    """
     # Check bounds
     bbox = _polygon_to_bbox(polygon)
-    if bbox[0] < 0 or bbox[1] < 0 or bbox[2] > MAX_CANVAS_WIDTH or bbox[3] > MAX_CANVAS_HEIGHT:
-        return False
+    if bbox[0] < 0:
+        return (False, f"Room would extend beyond left edge (x={bbox[0]:.1f} < 0)")
+    if bbox[1] < 0:
+        return (False, f"Room would extend beyond top edge (y={bbox[1]:.1f} < 0)")
+    if bbox[2] > MAX_CANVAS_WIDTH:
+        return (False, f"Room would extend beyond right edge (x={bbox[2]:.1f} > {MAX_CANVAS_WIDTH})")
+    if bbox[3] > MAX_CANVAS_HEIGHT:
+        return (False, f"Room would extend beyond bottom edge (y={bbox[3]:.1f} > {MAX_CANVAS_HEIGHT})")
     
     # Check overlaps using validate_room_placement
     validation = validate_room_placement(polygon, existing_rooms)
-    return validation.get("valid", False)
+    if not validation.get("valid", False):
+        error_msg = validation.get("error", "Room overlaps with existing room")
+        return (False, error_msg)
+    
+    return (True, None)
 
 
 def smart_room_placement(door_location: List[float], door_direction: str,
                         dimensions: Dict[str, float], existing_rooms: List[Dict[str, Any]],
-                        room_type: str, mode: str) -> Optional[List[List[float]]]:
+                        room_type: str, mode: str, preferred_position: Optional[List[float]] = None,
+                        target_room_size: Optional[Dict[str, float]] = None) -> Tuple[Optional[List[List[float]]], Optional[str]]:
     """
     Try multiple placement strategies to find valid room placement.
-    Returns best valid polygon or None if no valid placement found.
+    Returns tuple of (best_valid_polygon, error_message).
+    If placement found, error_message is None.
+    If no placement found, returns (None, detailed_error_message).
     """
     if not ENABLE_SMART_PLACEMENT:
         # Fallback to standard placement
         polygon = _generate_shaped_room(room_type, door_location, door_direction,
                                        dimensions["width"], dimensions["height"], mode)
-        if _is_valid_placement(polygon, existing_rooms):
-            return polygon
-        return None
+        is_valid, error_msg = _is_valid_placement(polygon, existing_rooms)
+        if is_valid:
+            return (polygon, None)
+        return (None, error_msg or "Standard placement failed")
     
     candidates = []
-    width = dimensions["width"]
-    height = dimensions["height"]
+    
+    # Use target room size from detected room if available (more accurate than default dimensions)
+    if target_room_size:
+        width = target_room_size.get("width", dimensions["width"])
+        height = target_room_size.get("height", dimensions["height"])
+        logger.info(f"Using target room size from blueprint: {width:.1f}x{height:.1f} (was {dimensions['width']:.1f}x{dimensions['height']:.1f})")
+    else:
+        width = dimensions["width"]
+        height = dimensions["height"]
+    
+    all_errors = []
+    
+    # Try placement at preferred position (from blueprint label) if available
+    if preferred_position:
+        try:
+            # Calculate offset from door to preferred position
+            pref_x, pref_y = preferred_position
+            door_x, door_y = door_location
+            
+            # Generate room centered at preferred position, but connected to door
+            # Adjust door location to align room center with preferred position
+            if door_direction == "N":
+                adjusted_door_x = pref_x
+                adjusted_door_y = pref_y + height / 2
+            elif door_direction == "S":
+                adjusted_door_x = pref_x
+                adjusted_door_y = pref_y - height / 2
+            elif door_direction == "E":
+                adjusted_door_x = pref_x - width / 2
+                adjusted_door_y = pref_y
+            else:  # W
+                adjusted_door_x = pref_x + width / 2
+                adjusted_door_y = pref_y
+            
+            preferred_polygon = _generate_shaped_room(
+                room_type, [adjusted_door_x, adjusted_door_y], door_direction, width, height, mode
+            )
+            is_valid, error_msg = _is_valid_placement(preferred_polygon, existing_rooms)
+            if is_valid:
+                candidates.append(("blueprint_label", preferred_polygon, 1.5))  # Higher score for blueprint alignment
+            elif error_msg:
+                all_errors.append(f"Blueprint label placement: {error_msg}")
+        except Exception as e:
+            logger.warning(f"Preferred position placement failed: {str(e)}")
     
     # Try standard placement
     standard = _generate_shaped_room(room_type, door_location, door_direction, width, height, mode)
-    if _is_valid_placement(standard, existing_rooms):
+    is_valid, error_msg = _is_valid_placement(standard, existing_rooms)
+    if is_valid:
         candidates.append(("standard", standard, 1.0))
+    elif error_msg:
+        all_errors.append(f"Standard placement: {error_msg}")
     
     # Try offset placements (left/right of door)
     for offset in [-200, -100, -50, 50, 100, 200]:
         offset_polygon = _generate_with_offset(door_location, door_direction, width, height, offset)
-        if _is_valid_placement(offset_polygon, existing_rooms):
+        is_valid, error_msg = _is_valid_placement(offset_polygon, existing_rooms)
+        if is_valid:
             score = 1.0 - abs(offset) / 200  # Prefer less offset
             candidates.append(("offset", offset_polygon, score))
+        elif error_msg and len(all_errors) < 3:  # Limit error messages
+            all_errors.append(f"Offset {offset}px: {error_msg}")
     
     # Try smaller dimensions if no valid placement
     if not candidates:
         smaller_dims = {"width": width * 0.7, "height": height * 0.7}
         smaller_polygon = _generate_shaped_room(room_type, door_location, door_direction,
                                                 smaller_dims["width"], smaller_dims["height"], mode)
-        if _is_valid_placement(smaller_polygon, existing_rooms):
+        is_valid, error_msg = _is_valid_placement(smaller_polygon, existing_rooms)
+        if is_valid:
             candidates.append(("smaller", smaller_polygon, 0.8))
+        elif error_msg:
+            all_errors.append(f"70% size: {error_msg}")
     
-    # Try even smaller
+    # Try even smaller sizes (more aggressive)
+    size_reductions = [0.5, 0.4, 0.3, 0.25, 0.2]
+    for reduction in size_reductions:
+        if candidates:  # If we found something, stop trying smaller
+            break
+        reduced_dims = {"width": width * reduction, "height": height * reduction}
+        # Ensure minimum viable size
+        if reduced_dims["width"] < 100 or reduced_dims["height"] < 100:
+            break
+        reduced_polygon = _generate_shaped_room(room_type, door_location, door_direction,
+                                                reduced_dims["width"], reduced_dims["height"], mode)
+        is_valid, error_msg = _is_valid_placement(reduced_polygon, existing_rooms)
+        if is_valid:
+            score = 0.6 - (1.0 - reduction) * 0.2  # Lower score for smaller rooms
+            candidates.append((f"{int(reduction*100)}%", reduced_polygon, score))
+        elif error_msg and len(all_errors) < 5:
+            all_errors.append(f"{int(reduction*100)}% size: {error_msg}")
+    
+    # Try placing behind the door (opposite direction) if no candidates yet
     if not candidates:
-        tiny_dims = {"width": width * 0.5, "height": height * 0.5}
-        tiny_polygon = _generate_shaped_room(room_type, door_location, door_direction,
-                                            tiny_dims["width"], tiny_dims["height"], mode)
-        if _is_valid_placement(tiny_polygon, existing_rooms):
-            candidates.append(("tiny", tiny_polygon, 0.6))
+        opposite_directions = {"N": "S", "S": "N", "E": "W", "W": "E"}
+        opposite_dir = opposite_directions.get(door_direction, door_direction)
+        for size_mult in [0.7, 0.5, 0.3]:
+            behind_dims = {"width": width * size_mult, "height": height * size_mult}
+            if behind_dims["width"] < 100 or behind_dims["height"] < 100:
+                break
+            behind_polygon = _generate_shaped_room(room_type, door_location, opposite_dir,
+                                                   behind_dims["width"], behind_dims["height"], mode)
+            is_valid, error_msg = _is_valid_placement(behind_polygon, existing_rooms)
+            if is_valid:
+                candidates.append((f"behind_{int(size_mult*100)}%", behind_polygon, 0.4))
+                break
+    
+    # Try more offset variations with smaller sizes
+    if not candidates:
+        for size_mult in [0.5, 0.4, 0.3]:
+            if candidates:
+                break
+            reduced_width = width * size_mult
+            reduced_height = height * size_mult
+            if reduced_width < 100 or reduced_height < 100:
+                break
+            # Try more offset positions
+            for offset in [-300, -250, -150, 150, 250, 300, -400, 400]:
+                offset_polygon = _generate_with_offset(door_location, door_direction, 
+                                                      reduced_width, reduced_height, offset)
+                is_valid, error_msg = _is_valid_placement(offset_polygon, existing_rooms)
+                if is_valid:
+                    score = 0.5 - abs(offset) / 1000  # Lower score for larger offsets
+                    candidates.append((f"offset_{offset}_{int(size_mult*100)}%", offset_polygon, score))
+                    break  # Found one, try next size
+                if len(candidates) > 0:
+                    break
+    
+    # Try clamping to canvas if it's just a bounds issue (last resort)
+    if not candidates:
+        # Try a small room and clamp it to canvas bounds
+        min_size = {"width": max(150, width * 0.2), "height": max(150, height * 0.2)}
+        clamped_polygon = _generate_shaped_room(room_type, door_location, door_direction,
+                                                min_size["width"], min_size["height"], mode)
+        clamped_polygon = _clamp_polygon_to_canvas(clamped_polygon)
+        # Check if clamped version is valid (only check overlaps, not bounds)
+        validation = validate_room_placement(clamped_polygon, existing_rooms)
+        if validation.get("valid", False):
+            candidates.append(("clamped", clamped_polygon, 0.3))
     
     # Return best candidate
     if candidates:
         candidates.sort(key=lambda x: x[2], reverse=True)
-        return candidates[0][1]
+        return (candidates[0][1], None)
     
-    return None
+    # Build detailed error message
+    if all_errors:
+        # Group errors by type
+        bounds_errors = [e for e in all_errors if "edge" in e.lower() or "extend" in e.lower()]
+        overlap_errors = [e for e in all_errors if "overlap" in e.lower()]
+        
+        if bounds_errors:
+            return (None, f"Room would go out of bounds. {bounds_errors[0]} Tried multiple sizes and positions but couldn't fit within canvas limits.")
+        elif overlap_errors:
+            return (None, f"{overlap_errors[0]} Tried multiple sizes, offsets, and positions but all overlapped with existing rooms. Try moving or resizing nearby rooms to create space.")
+        else:
+            return (None, f"Placement failed after trying multiple strategies: {all_errors[0]}")
+    
+    return (None, "No valid placement found after trying multiple sizes, positions, and directions. The door may be in a very tight space. Try a different door or adjust existing rooms.")
 

@@ -17,12 +17,12 @@ export default function RoomSuggestionPanel({
   door,
   currentRoomType,
   suggestions,
-  mode,
+  mode: _mode, // Unused but kept for API compatibility
   isLoading,
   error,
   onGenerate,
   onCancel,
-  onToggleMode,
+  onToggleMode: _onToggleMode, // Unused but kept for API compatibility
 }: RoomSuggestionPanelProps) {
   const [selectedSuggestion, setSelectedSuggestion] = useState<string | null>(null);
   const [customRoomType, setCustomRoomType] = useState('');
@@ -54,8 +54,8 @@ export default function RoomSuggestionPanel({
         </p>
       </div>
 
-      {/* Mode Toggle */}
-      <div className="mb-4">
+      {/* Mode Toggle - Hidden but functionality preserved (always uses 'realistic' mode) */}
+      {/* <div className="mb-4">
         <div className="flex items-center gap-2">
           <span className="text-sm text-gray-600">Mode:</span>
           <button
@@ -77,7 +77,7 @@ export default function RoomSuggestionPanel({
             </span>
           </button>
         </div>
-      </div>
+      </div> */}
 
       {/* Error Message */}
       {error && (

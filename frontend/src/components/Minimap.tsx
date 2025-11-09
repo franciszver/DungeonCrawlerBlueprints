@@ -28,8 +28,10 @@ export default function Minimap({
   isVisible,
   onToggle,
 }: MinimapProps) {
-  const minimapSize = 200;
-  const scale = Math.min(minimapSize / imageWidth, minimapSize / imageHeight);
+  // Horizontal minimap - wider than tall
+  const minimapWidth = 300;
+  const minimapHeight = 120;
+  const scale = Math.min(minimapWidth / imageWidth, minimapHeight / imageHeight);
   const scaledWidth = imageWidth * scale;
   const scaledHeight = imageHeight * scale;
 
@@ -49,7 +51,7 @@ export default function Minimap({
   const viewportH = viewportBounds.height * scale;
 
   return (
-    <div className="absolute bottom-4 right-4 z-10">
+    <div>
       {isVisible && (
         <div className="bg-white rounded-lg shadow-lg p-2 border border-gray-300">
           <div className="flex items-center justify-between mb-2">
@@ -67,7 +69,7 @@ export default function Minimap({
             viewBox={`0 0 ${imageWidth} ${imageHeight}`}
             className="border border-gray-300 rounded cursor-pointer"
             onClick={handleClick}
-            style={{ maxWidth: minimapSize, maxHeight: minimapSize }}
+            style={{ maxWidth: minimapWidth, maxHeight: minimapHeight }}
           >
             {/* Miniature blueprint */}
             {blueprintImage && (
@@ -124,14 +126,6 @@ export default function Minimap({
             />
           </svg>
         </div>
-      )}
-      {!isVisible && (
-        <button
-          onClick={onToggle}
-          className="bg-white rounded-lg shadow-lg px-3 py-2 text-xs text-gray-700 hover:bg-gray-50"
-        >
-          Show Map
-        </button>
       )}
     </div>
   );

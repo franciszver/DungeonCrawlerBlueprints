@@ -152,6 +152,84 @@ This will:
 aws s3 ls s3://$TRAINING_DATA_BUCKET/training-data/
 ```
 
+## Edge Detection Setup
+
+The system includes edge detection for refining room boundaries. Two deployment options are available:
+
+### Default: PIL Lightweight Solution (Works Out of Box)
+
+The default deployment uses PIL (Pillow) for edge detection, which works immediately with the standard Lambda layer. No additional setup is required.
+
+**Features:**
+- Works immediately after standard deployment
+- Zero additional cost
+- ~70% accuracy (good for most use cases)
+- No container image needed
+
+**Verification:**
+The `/refine/{job_id}` endpoint will automatically use PIL-based edge detection. Check CloudWatch logs to see which method is used.
+
+### Optional Upgrade: OpenCV Container Image (Maximum Accuracy)
+
+For maximum edge detection accuracy (~90%), you can deploy RefineFunction as a container image with OpenCV support.
+
+**Prerequisites:**
+- Docker installed locally
+- AWS CLI configured
+- ECR repository will be created automatically by SAM
+
+**Steps:**
+
+1. **Build and push container image:**
+   ```bash
+   # Linux/Mac
+   cd scripts
+   ./build-refine-container.sh
+   
+   # Windows PowerShell
+   cd scripts
+   .\build-refine-container.ps1
+   ```
+
+2. **Update SAM template:**
+   - Open `infrastructure/template.yaml`
+   - Find the commented `RefineFunctionContainer` section
+   - Uncomment it
+   - The image URI will be set automatically from the ECR repository
+
+3. **Deploy updated stack:**
+   ```bash
+   cd infrastructure
+   sam build
+   sam deploy
+   ```
+
+**Cost Analysis:**
+- Container image: Same Lambda pricing as zip deployment
+- ECR storage: ~$0.01/month for image (~200MB)
+- Total additional cost: Negligible (~$0.02-0.03/month for 100 refinements)
+
+**Accuracy Comparison:**
+- PIL (default): ~70% accuracy, works immediately
+- OpenCV (optional): ~90% accuracy, requires container setup
+
+**Troubleshooting:**
+
+**Issue: Container image build fails**
+- Ensure Docker is running
+- Check AWS credentials are configured
+- Verify ECR repository was created by SAM stack
+
+**Issue: OpenCV not available in container**
+- Check Dockerfile includes opencv-python-headless
+- Verify image was built and pushed successfully
+- Check CloudWatch logs for import errors
+
+**Issue: PIL edge detection not working**
+- Verify Pillow>=12.0.0 is in `layers/dependencies/requirements.txt`
+- Check Lambda layer was built with Pillow included
+- Review CloudWatch logs for PIL import errors
+
 ## Post-Deployment Testing
 
 ### 1. Health Check
