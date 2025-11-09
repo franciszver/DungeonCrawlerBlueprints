@@ -1,9 +1,11 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import RoomCanvas from './RoomCanvas';
 import RoomSuggestionPanel from './RoomSuggestionPanel';
 import { useRoomExtension } from '../hooks/useRoomExtension';
 import { useUndoRedo, createAddAction, createModifyAction } from '../hooks/useUndoRedo';
 import { useCanvasInteraction } from '../hooks/useCanvasInteraction';
+import { findNearestEdge, calculateEdgeDirection } from '../utils/geometryHelpers';
+import { updatePlan } from '../services/api';
 import type { Room, Door, HistoryAction } from '../types';
 
 interface InteractiveEditorProps {
@@ -11,6 +13,8 @@ interface InteractiveEditorProps {
   rooms: Room[];
   doors: Door[];
   blueprintImage: string;
+  initialExtendedRooms?: Room[];
+  initialModifiedRooms?: Room[];
   onExtendedRoomsChange?: (extendedRooms: Room[]) => void;
 }
 
@@ -19,10 +23,21 @@ export default function InteractiveEditor({
   rooms,
   doors,
   blueprintImage,
+  initialExtendedRooms = [],
+  initialModifiedRooms = [],
   onExtendedRoomsChange,
 }: InteractiveEditorProps) {
-  const [extendedRooms, setExtendedRooms] = useState<Room[]>([]);
-  const allRooms = [...rooms, ...extendedRooms];
+  const [extendedRooms, setExtendedRooms] = useState<Room[]>(initialExtendedRooms);
+  const [modifiedOriginalRooms, setModifiedOriginalRooms] = useState<Room[]>(initialModifiedRooms);
+  const [mode, setMode] = useState<'normal' | 'addDoor'>('normal');
+  const [allDoors, setAllDoors] = useState<Door[]>(doors || []);
+  
+  // Combine rooms: unmodified originals + modified originals + extended rooms
+  const allRooms = [
+    ...rooms.filter(r => !modifiedOriginalRooms.find(m => m.id === r.id)),
+    ...modifiedOriginalRooms,
+    ...extendedRooms
+  ];
 
   // Handle room added
   const handleRoomAdded = useCallback((room: Room) => {
@@ -39,15 +54,31 @@ export default function InteractiveEditor({
     const previousRoom = allRooms.find(r => r.id === updatedRoom.id);
     if (!previousRoom) return;
 
+    // Check if this is an original room (not extended)
+    const isOriginalRoom = rooms.some(r => r.id === updatedRoom.id);
+    
     if (updatedRoom.is_extended) {
+      // Extended room modification
       setExtendedRooms(prev => {
         const newRooms = prev.map(r => r.id === updatedRoom.id ? updatedRoom : r);
         onExtendedRoomsChange?.(newRooms);
         return newRooms;
       });
+    } else if (isOriginalRoom) {
+      // Original room modification - mark as modified and move to modifiedOriginalRooms
+      const modifiedRoom = { ...updatedRoom, is_modified: true };
+      setModifiedOriginalRooms(prev => {
+        const existingIndex = prev.findIndex(r => r.id === modifiedRoom.id);
+        if (existingIndex >= 0) {
+          return prev.map(r => r.id === modifiedRoom.id ? modifiedRoom : r);
+        } else {
+          return [...prev, modifiedRoom];
+        }
+      });
     }
+    
     undoRedo.addAction(createModifyAction(updatedRoom, previousRoom));
-  }, [allRooms, onExtendedRoomsChange]);
+  }, [allRooms, rooms, onExtendedRoomsChange]);
 
   // Undo/Redo handlers
   const handleUndo = useCallback((action: HistoryAction) => {
@@ -58,11 +89,29 @@ export default function InteractiveEditor({
         setExtendedRooms(prev => prev.map(r => 
           r.id === action.previousState!.id ? action.previousState! : r
         ).filter((r): r is Room => r !== undefined));
+      } else {
+        // Check if this was a modified original room
+        const isOriginalRoom = rooms.some(r => r.id === action.previousState!.id);
+        if (isOriginalRoom) {
+          // If restoring to original state, remove from modified list
+          const originalRoom = rooms.find(r => r.id === action.previousState!.id);
+          if (originalRoom && JSON.stringify(originalRoom) === JSON.stringify(action.previousState)) {
+            // Room is back to original state, remove from modified list
+            setModifiedOriginalRooms(prev => prev.filter(r => r.id !== action.previousState!.id));
+          } else {
+            // Update modified room
+            setModifiedOriginalRooms(prev => prev.map(r => 
+              r.id === action.previousState!.id ? action.previousState! : r
+            ).filter((r): r is Room => r !== undefined));
+          }
+        }
       }
     } else if (action.type === 'delete' && action.room) {
-      setExtendedRooms(prev => [...prev, action.room!]);
+      if (action.room.is_extended) {
+        setExtendedRooms(prev => [...prev, action.room!]);
+      }
     }
-  }, []);
+  }, [rooms]);
 
   const handleRedo = useCallback((action: HistoryAction) => {
     if (action.type === 'add' && action.room) {
@@ -72,11 +121,26 @@ export default function InteractiveEditor({
         setExtendedRooms(prev => prev.map(r => 
           r.id === action.room!.id ? action.room! : r
         ).filter((r): r is Room => r !== undefined));
+      } else {
+        // Check if this is a modified original room
+        const isOriginalRoom = rooms.some(r => r.id === action.room!.id);
+        if (isOriginalRoom && action.room.is_modified) {
+          setModifiedOriginalRooms(prev => {
+            const existingIndex = prev.findIndex(r => r.id === action.room!.id);
+            if (existingIndex >= 0) {
+              return prev.map(r => r.id === action.room!.id ? action.room! : r);
+            } else {
+              return [...prev, action.room!];
+            }
+          });
+        }
       }
     } else if (action.type === 'delete' && action.room) {
-      setExtendedRooms(prev => prev.filter(r => r.id !== action.room!.id));
+      if (action.room.is_extended) {
+        setExtendedRooms(prev => prev.filter(r => r.id !== action.room!.id));
+      }
     }
-  }, []);
+  }, [rooms]);
 
   // Initialize hooks
   const roomExtension = useRoomExtension({
@@ -103,14 +167,20 @@ export default function InteractiveEditor({
   //   undoRedo.addAction(createDeleteAction(room));
   // }, [extendedRooms, onExtendedRoomsChange, undoRedo]);
 
+  const [overlapWarning, setOverlapWarning] = useState(false);
+
   const canvas = useCanvasInteraction({
     rooms: allRooms,
     onRoomModified: handleRoomModified,
     isInteractive: true,
+    onOverlapWarning: setOverlapWarning,
   });
 
   // Handle door click
   const handleDoorClick = (door: Door) => {
+    // Don't open room generation panel if in addDoor mode
+    if (mode === 'addDoor') return;
+    
     // Find which room this door belongs to
     const room = allRooms.find(r => 
       r.doors?.some(d => d.id === door.id)
@@ -134,6 +204,153 @@ export default function InteractiveEditor({
       roomType
     );
   };
+
+  // Handle edge click for door addition
+  const handleEdgeClick = useCallback((event: React.MouseEvent<SVGElement>, room: Room) => {
+    if (mode !== 'addDoor' || !room.polygon) return;
+
+    const svg = canvas.svgRef.current;
+    if (!svg) return;
+
+    // Get mouse position in SVG coordinates
+    const pt = svg.createSVGPoint();
+    pt.x = event.clientX;
+    pt.y = event.clientY;
+    const svgP = pt.matrixTransform(svg.getScreenCTM()?.inverse());
+    const mousePos: [number, number] = [svgP.x, svgP.y];
+
+    // Find nearest edge
+    const edgeInfo = findNearestEdge(room.polygon, mousePos, 10);
+    if (!edgeInfo) return;
+
+    // Calculate door direction
+    const edgeStart = room.polygon[edgeInfo.edgeIndex];
+    const edgeEnd = room.polygon[(edgeInfo.edgeIndex + 1) % room.polygon.length];
+    const direction = calculateEdgeDirection(edgeStart, edgeEnd);
+
+    // Generate unique door ID
+    const doorId = `door_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    const newDoor: Door = {
+      id: doorId,
+      location: edgeInfo.closestPoint,
+      direction,
+    };
+
+    // Add door to room
+    const updatedDoors = [...(room.doors || []), newDoor];
+    const updatedRoom = {
+      ...room,
+      doors: updatedDoors,
+    };
+
+    // Update room in appropriate state
+    if (room.is_extended) {
+      setExtendedRooms(prev => prev.map(r => r.id === room.id ? updatedRoom : r));
+    } else if (modifiedOriginalRooms.some(r => r.id === room.id)) {
+      setModifiedOriginalRooms(prev => prev.map(r => r.id === room.id ? updatedRoom : r));
+    } else {
+      // Original room - add to modified list
+      const modifiedRoom = { ...updatedRoom, is_modified: true };
+      setModifiedOriginalRooms(prev => {
+        const existingIndex = prev.findIndex(r => r.id === modifiedRoom.id);
+        if (existingIndex >= 0) {
+          return prev.map(r => r.id === modifiedRoom.id ? modifiedRoom : r);
+        } else {
+          return [...prev, modifiedRoom];
+        }
+      });
+    }
+
+    // Add door to all doors list
+    setAllDoors(prev => [...prev, newDoor]);
+
+    // Add to undo/redo
+    undoRedo.addAction(createModifyAction(updatedRoom, room));
+
+    event.stopPropagation();
+  }, [mode, canvas, modifiedOriginalRooms, undoRedo]);
+
+  // Handle door deletion
+  const handleDoorDelete = useCallback((doorId: string) => {
+    // Find room(s) containing this door
+    const roomsWithDoor = allRooms.filter(r => r.doors?.some(d => d.id === doorId));
+    
+    roomsWithDoor.forEach(room => {
+      const updatedDoors = room.doors?.filter(d => d.id !== doorId) || [];
+      const updatedRoom = {
+        ...room,
+        doors: updatedDoors,
+      };
+
+      // Update room in appropriate state
+      if (room.is_extended) {
+        setExtendedRooms(prev => prev.map(r => r.id === room.id ? updatedRoom : r));
+      } else if (modifiedOriginalRooms.some(r => r.id === room.id)) {
+        setModifiedOriginalRooms(prev => prev.map(r => r.id === room.id ? updatedRoom : r));
+      } else {
+        // Original room - add to modified list
+        const modifiedRoom = { ...updatedRoom, is_modified: true };
+        setModifiedOriginalRooms(prev => {
+          const existingIndex = prev.findIndex(r => r.id === modifiedRoom.id);
+          if (existingIndex >= 0) {
+            return prev.map(r => r.id === modifiedRoom.id ? modifiedRoom : r);
+          } else {
+            return [...prev, modifiedRoom];
+          }
+        });
+      }
+
+      // Add to undo/redo
+      undoRedo.addAction(createModifyAction(updatedRoom, room));
+    });
+
+    // Remove door from all doors list
+    setAllDoors(prev => prev.filter(d => d.id !== doorId));
+  }, [allRooms, modifiedOriginalRooms, undoRedo]);
+
+  // Update allDoors when doors prop changes
+  useEffect(() => {
+    setAllDoors(doors || []);
+  }, [doors]);
+
+  // Debounced persistence to backend
+  const persistTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  
+  const persistToBackend = useCallback(() => {
+    if (persistTimeoutRef.current) {
+      clearTimeout(persistTimeoutRef.current);
+    }
+    
+    persistTimeoutRef.current = setTimeout(async () => {
+      try {
+        await updatePlan(
+          jobId,
+          modifiedOriginalRooms,
+          extendedRooms,
+          allDoors
+        );
+      } catch (error) {
+        console.error('Failed to persist changes to backend:', error);
+        // Don't show error to user - changes are still in local state
+      }
+    }, 2000); // Debounce for 2 seconds
+  }, [jobId, modifiedOriginalRooms, extendedRooms, allDoors]);
+
+  // Persist when modified rooms, extended rooms, or doors change
+  useEffect(() => {
+    if (modifiedOriginalRooms.length > 0 || extendedRooms.length > 0) {
+      persistToBackend();
+    }
+  }, [modifiedOriginalRooms, extendedRooms, allDoors, persistToBackend]);
+
+  // Cleanup timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (persistTimeoutRef.current) {
+        clearTimeout(persistTimeoutRef.current);
+      }
+    };
+  }, []);
 
   return (
     <div className="relative w-full h-full">
@@ -159,7 +376,7 @@ export default function InteractiveEditor({
           </button>
         </div>
 
-        {/* Mode Toggle */}
+        {/* Generation Mode Toggle */}
         <div className="bg-white rounded-lg shadow-lg p-2">
           <button
             onClick={roomExtension.toggleMode}
@@ -167,6 +384,22 @@ export default function InteractiveEditor({
           >
             <span className="text-sm font-medium">
               Mode: {roomExtension.mode === 'realistic' ? '🏢 Realistic' : '🏰 Fantasy'}
+            </span>
+          </button>
+        </div>
+
+        {/* Add Door Mode Toggle */}
+        <div className="bg-white rounded-lg shadow-lg p-2">
+          <button
+            onClick={() => setMode(mode === 'addDoor' ? 'normal' : 'addDoor')}
+            className={`px-3 py-2 rounded transition-colors flex items-center gap-2 ${
+              mode === 'addDoor' 
+                ? 'bg-blue-600 text-white' 
+                : 'bg-gray-100 hover:bg-gray-200'
+            }`}
+          >
+            <span className="text-sm font-medium">
+              {mode === 'addDoor' ? '✓ Add Door' : '➕ Add Door'}
             </span>
           </button>
         </div>
@@ -178,6 +411,10 @@ export default function InteractiveEditor({
           <div className="flex items-center justify-between gap-4">
             <span className="text-gray-600">Original Rooms:</span>
             <span className="font-semibold">{rooms.length}</span>
+          </div>
+          <div className="flex items-center justify-between gap-4">
+            <span className="text-gray-600">Modified:</span>
+            <span className="font-semibold text-amber-600">{modifiedOriginalRooms.length}</span>
           </div>
           <div className="flex items-center justify-between gap-4">
             <span className="text-gray-600">Extended Rooms:</span>
@@ -193,7 +430,7 @@ export default function InteractiveEditor({
       {/* Canvas */}
       <RoomCanvas
         rooms={allRooms}
-        doors={doors}
+        doors={allDoors}
         blueprintImage={blueprintImage}
         isInteractive={true}
         selectedDoorId={roomExtension.selectedDoor?.id}
@@ -202,9 +439,11 @@ export default function InteractiveEditor({
         onDoorClick={handleDoorClick}
         onDoorHover={canvas.handleDoorHover}
         onRoomHover={canvas.handleRoomHover}
-        onMouseDown={canvas.handleMouseDown}
+        onMouseDown={mode === 'addDoor' ? (e, room) => handleEdgeClick(e, room) : canvas.handleMouseDown}
         onMouseMove={canvas.handleMouseMove}
         onMouseUp={canvas.handleMouseUp}
+        onDoorDelete={handleDoorDelete}
+        addDoorMode={mode === 'addDoor'}
         svgRef={canvas.svgRef}
       />
 
@@ -225,13 +464,22 @@ export default function InteractiveEditor({
         />
       )}
 
+      {/* Overlap Warning */}
+      {overlapWarning && (
+        <div className="absolute top-20 left-4 z-10 bg-red-100 border border-red-400 text-red-700 px-4 py-2 rounded-lg shadow-lg">
+          <p className="font-semibold text-sm">⚠️ Room Overlap Detected</p>
+        </div>
+      )}
+
       {/* Help Text */}
       <div className="absolute bottom-20 left-4 bg-white rounded-lg shadow-lg p-3 text-sm text-gray-600 max-w-xs">
         <p className="font-semibold mb-1">💡 Interactive Mode Active</p>
         <ul className="space-y-1 text-xs">
           <li>• Click red dots to add rooms</li>
-          <li>• Hover over rooms to see corners</li>
+          <li>• Drag room body to move</li>
           <li>• Drag corners to resize</li>
+          {mode === 'addDoor' && <li className="text-blue-600 font-semibold">• Click room edge to add door</li>}
+          <li>• Hover doors to delete</li>
           <li>• Use Ctrl+Z / Ctrl+Y to undo/redo</li>
         </ul>
       </div>

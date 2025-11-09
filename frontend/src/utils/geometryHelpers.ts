@@ -111,6 +111,17 @@ export const resizePolygon = (
 };
 
 /**
+ * Translate (move) an entire polygon by deltaX and deltaY
+ */
+export const translatePolygon = (
+  polygon: Polygon,
+  deltaX: number,
+  deltaY: number
+): Polygon => {
+  return polygon.map(point => [point[0] + deltaX, point[1] + deltaY]);
+};
+
+/**
  * Find the nearest corner of a polygon to a point
  */
 export const findNearestCorner = (
@@ -214,6 +225,7 @@ export const calculatePolygonArea = (polygon: Polygon): number => {
  */
 export const getRoomColor = (room: Room): string => {
   if (room.is_extended) return '#16a34a'; // Green for extended rooms
+  if (room.is_modified) return '#f59e0b'; // Orange/Yellow for modified original rooms
   return '#3b82f6'; // Blue for detected rooms
 };
 
@@ -269,5 +281,85 @@ export const scalePolygonToFit = (
     (point[0] - x_min) * scale,
     (point[1] - y_min) * scale,
   ]);
+};
+
+/**
+ * Find the nearest edge of a polygon to a point
+ * Returns the edge index (edge is between points[index] and points[(index+1)%length])
+ */
+export const findNearestEdge = (
+  polygon: Polygon,
+  point: [number, number],
+  threshold: number = 10
+): { edgeIndex: number; distance: number; closestPoint: [number, number] } | null => {
+  let nearestEdge: { edgeIndex: number; distance: number; closestPoint: [number, number] } | null = null;
+  let nearestDistance = threshold;
+  
+  for (let i = 0; i < polygon.length; i++) {
+    const p1 = polygon[i];
+    const p2 = polygon[(i + 1) % polygon.length];
+    
+    // Calculate distance from point to line segment
+    const A = point[0] - p1[0];
+    const B = point[1] - p1[1];
+    const C = p2[0] - p1[0];
+    const D = p2[1] - p1[1];
+    
+    const dot = A * C + B * D;
+    const lenSq = C * C + D * D;
+    let param = -1;
+    
+    if (lenSq !== 0) {
+      param = dot / lenSq;
+    }
+    
+    let xx: number, yy: number;
+    
+    if (param < 0) {
+      xx = p1[0];
+      yy = p1[1];
+    } else if (param > 1) {
+      xx = p2[0];
+      yy = p2[1];
+    } else {
+      xx = p1[0] + param * C;
+      yy = p1[1] + param * D;
+    }
+    
+    const dx = point[0] - xx;
+    const dy = point[1] - yy;
+    const distance = Math.sqrt(dx * dx + dy * dy);
+    
+    if (distance < nearestDistance) {
+      nearestDistance = distance;
+      nearestEdge = {
+        edgeIndex: i,
+        distance,
+        closestPoint: [xx, yy] as [number, number],
+      };
+    }
+  }
+  
+  return nearestEdge;
+};
+
+/**
+ * Calculate door direction (N/S/E/W) from an edge
+ */
+export const calculateEdgeDirection = (
+  edgeStart: [number, number],
+  edgeEnd: [number, number]
+): 'N' | 'S' | 'E' | 'W' => {
+  const dx = edgeEnd[0] - edgeStart[0];
+  const dy = edgeEnd[1] - edgeStart[1];
+  
+  // Determine primary direction based on larger component
+  if (Math.abs(dx) > Math.abs(dy)) {
+    // Horizontal edge
+    return dx > 0 ? 'E' : 'W';
+  } else {
+    // Vertical edge
+    return dy > 0 ? 'S' : 'N';
+  }
 };
 

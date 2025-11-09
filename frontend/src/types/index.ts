@@ -16,6 +16,7 @@ export interface Room {
   adjacent_to?: string[];
   doors?: Door[];
   is_extended?: boolean; // True if user-generated
+  is_modified?: boolean; // True if original room was edited
   connected_door?: {
     location: [number, number];
     direction: string;
@@ -41,6 +42,7 @@ export interface DetectionResult {
   rooms?: Room[];
   doors?: Door[];
   extended_rooms?: Room[];
+  modified_rooms?: Room[];
   confidence?: number;
   metadata?: DetectionMetadata;
   error?: string;

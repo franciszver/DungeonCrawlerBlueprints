@@ -16,6 +16,8 @@ interface RoomCanvasProps {
   onMouseDown?: (event: React.MouseEvent<SVGElement>, room: Room) => void;
   onMouseMove?: (event: React.MouseEvent<SVGElement>) => void;
   onMouseUp?: () => void;
+  onDoorDelete?: (doorId: string) => void;
+  addDoorMode?: boolean;
   svgRef?: React.RefObject<SVGSVGElement>;
 }
 
@@ -33,6 +35,8 @@ export default function RoomCanvas({
   onMouseDown,
   onMouseMove,
   onMouseUp,
+  onDoorDelete,
+  addDoorMode = false,
   svgRef,
 }: RoomCanvasProps) {
   
@@ -208,6 +212,8 @@ export default function RoomCanvas({
             isActive={selectedDoorId === door.id}
             isHovered={hoveredDoorId === door.id}
             onHover={(hovered) => onDoorHover(hovered ? door.id : null)}
+            onDelete={onDoorDelete ? () => onDoorDelete(door.id) : undefined}
+            showDeleteButton={!addDoorMode}
           />
         ))}
       </svg>

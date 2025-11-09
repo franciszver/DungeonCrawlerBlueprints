@@ -162,9 +162,11 @@ export default function ResultsViewer({ result, blueprintImage, jobId }: Results
             <div className="h-[600px] border border-gray-300 rounded-lg overflow-hidden">
               <InteractiveEditor
                 jobId={jobId}
-                rooms={result.rooms}
+                rooms={result.rooms || []}
                 doors={result.doors || []}
                 blueprintImage={blueprintImage || ''}
+                initialExtendedRooms={result.extended_rooms || []}
+                initialModifiedRooms={result.modified_rooms || []}
                 onExtendedRoomsChange={setExtendedRooms}
               />
             </div>

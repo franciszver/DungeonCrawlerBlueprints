@@ -85,7 +85,8 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         rooms = job.get('results', [])
         doors = job.get('doors', [])
         extended_rooms = job.get('extended_rooms', [])
-        all_rooms = rooms + extended_rooms
+        modified_rooms = job.get('modified_rooms', [])
+        all_rooms = rooms + modified_rooms + extended_rooms
         
         if export_format == 'svg':
             # Generate SVG overlay with polygons and doors
@@ -107,6 +108,7 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 'rooms': rooms,
                 'doors': doors,
                 'extended_rooms': extended_rooms,
+                'modified_rooms': modified_rooms,
                 'confidence': float(job.get('confidence', 0.0)) if job.get('confidence') else 0.0,
                 'metadata': job.get('metadata', {}),
                 'exported_at': job.get('updated_at')

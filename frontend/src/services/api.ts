@@ -157,3 +157,27 @@ export const validateRoomPlacement = async (
   return response.data;
 };
 
+export const updatePlan = async (
+  jobId: string,
+  modifiedRooms?: any[],
+  extendedRooms?: any[],
+  doors?: any[]
+): Promise<{ job_id: string; message: string }> => {
+  const request: any = {
+    action: 'update_plan',
+  };
+  
+  if (modifiedRooms !== undefined) {
+    request.modified_rooms = modifiedRooms;
+  }
+  if (extendedRooms !== undefined) {
+    request.extended_rooms = extendedRooms;
+  }
+  if (doors !== undefined) {
+    request.doors = doors;
+  }
+
+  const response = await apiClient.post<{ job_id: string; message: string }>(`/extend/${jobId}`, request);
+  return response.data;
+};
+

@@ -253,6 +253,46 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 })
             }
         
+        elif action == 'update_plan':
+            # Update modified rooms, extended rooms, and doors
+            modified_rooms = body.get('modified_rooms', [])
+            updated_extended_rooms = body.get('extended_rooms')
+            updated_doors = body.get('doors')
+            
+            update_expression_parts = ['updated_at = :updated']
+            expression_values = {':updated': datetime.utcnow().isoformat()}
+            
+            if modified_rooms is not None:
+                update_expression_parts.append('modified_rooms = :modified')
+                expression_values[':modified'] = convert_floats_to_decimal(modified_rooms)
+            
+            if updated_extended_rooms is not None:
+                update_expression_parts.append('extended_rooms = :extended')
+                expression_values[':extended'] = convert_floats_to_decimal(updated_extended_rooms)
+            
+            if updated_doors is not None:
+                update_expression_parts.append('doors = :doors')
+                expression_values[':doors'] = convert_floats_to_decimal(updated_doors)
+            
+            # Update job in DynamoDB
+            table.update_item(
+                Key={'job_id': job_id},
+                UpdateExpression=f'SET {", ".join(update_expression_parts)}',
+                ExpressionAttributeValues=expression_values
+            )
+            
+            return {
+                'statusCode': 200,
+                'headers': {
+                    'Content-Type': 'application/json',
+                    'Access-Control-Allow-Origin': '*'
+                },
+                'body': json.dumps({
+                    'job_id': job_id,
+                    'message': 'Plan updated successfully'
+                })
+            }
+        
         else:
             return {
                 'statusCode': 400,

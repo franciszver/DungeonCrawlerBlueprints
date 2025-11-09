@@ -6,10 +6,25 @@ interface DoorMarkerProps {
   isActive: boolean;
   isHovered: boolean;
   onHover: (hovered: boolean) => void;
+  onDelete?: () => void;
+  showDeleteButton?: boolean;
 }
 
-export default function DoorMarker({ door, onClick, isActive, isHovered, onHover }: DoorMarkerProps) {
+export default function DoorMarker({ 
+  door, 
+  onClick, 
+  isActive, 
+  isHovered, 
+  onHover, 
+  onDelete,
+  showDeleteButton = true 
+}: DoorMarkerProps) {
   const [x, y] = door.location;
+  
+  const handleDeleteClick = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    onDelete?.();
+  };
   
   return (
     <g
@@ -46,6 +61,29 @@ export default function DoorMarker({ door, onClick, isActive, isHovered, onHover
             y1={y}
             x2={x + 4}
             y2={y}
+            stroke="white"
+            strokeWidth={2}
+            strokeLinecap="round"
+          />
+        </g>
+      )}
+      
+      {/* Delete button */}
+      {showDeleteButton && isHovered && onDelete && (
+        <g onClick={handleDeleteClick} className="cursor-pointer">
+          <circle
+            cx={x + 15}
+            cy={y - 15}
+            r={8}
+            fill="#ef4444"
+            stroke="white"
+            strokeWidth={2}
+          />
+          <line
+            x1={x + 11}
+            y1={y - 15}
+            x2={x + 19}
+            y2={y - 15}
             stroke="white"
             strokeWidth={2}
             strokeLinecap="round"
