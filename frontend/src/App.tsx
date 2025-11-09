@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import BlueprintUpload from './components/BlueprintUpload';
 import ResultsViewer from './components/ResultsViewer';
 import ExportPanel from './components/ExportPanel';
@@ -10,7 +10,6 @@ function App() {
   const [detectionResult, setDetectionResult] = useState<DetectionResult | null>(null);
   const [blueprintImage, setBlueprintImage] = useState<string>('');
   const [error, setError] = useState<string>('');
-  const [polling, setPolling] = useState(false);
 
   const handleUploadComplete = async (result: UploadResponse) => {
     setUploadResult(result);
@@ -23,7 +22,6 @@ function App() {
 
       // If still processing, poll for results
       if (detectResult.status === 'processing') {
-        setPolling(true);
         pollForResults(result.job_id);
       }
     } catch (err: any) {
@@ -37,7 +35,6 @@ function App() {
 
     const poll = async () => {
       if (attempts >= maxAttempts) {
-        setPolling(false);
         setError('Detection timeout - please check results manually');
         return;
       }
@@ -46,14 +43,11 @@ function App() {
         const result = await getResults(jobId);
         setDetectionResult(result);
 
-        if (result.status === 'completed' || result.status === 'failed') {
-          setPolling(false);
-        } else {
+        if (result.status !== 'completed' && result.status !== 'failed') {
           attempts++;
           setTimeout(poll, 1000); // Poll every second
         }
       } catch (err: any) {
-        setPolling(false);
         setError(err.response?.data?.error || err.message || 'Failed to get results');
       }
     };
@@ -126,7 +120,6 @@ function App() {
                   setDetectionResult(null);
                   setBlueprintImage('');
                   setError('');
-                  setPolling(false);
                 }}
                 className="w-full bg-gray-600 text-white py-2 px-4 rounded-lg hover:bg-gray-700 transition-colors"
               >
