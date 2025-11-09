@@ -23,8 +23,9 @@ Resources:
       StageName: dev
       Cors:
         AllowMethods: "'GET,POST,OPTIONS'"
-        AllowHeaders: "'Content-Type,x-api-key'"
+        AllowHeaders: "'Content-Type,x-api-key,Authorization'"
         AllowOrigin: "'*'"
+        MaxAge: "'600'"
       Auth:
         ApiKeyRequired: true
 
@@ -117,6 +118,12 @@ Resources:
             RestApiId: !Ref BlueprintsApi
             Path: /upload
             Method: post
+        UploadApiOptions:
+          Type: Api
+          Properties:
+            RestApiId: !Ref BlueprintsApi
+            Path: /upload
+            Method: options
       Policies:
         - S3WritePolicy:
             BucketName: !Ref BlueprintsBucket

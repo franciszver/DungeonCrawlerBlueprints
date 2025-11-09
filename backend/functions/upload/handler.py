@@ -4,6 +4,12 @@ import boto3
 import uuid
 from datetime import datetime
 from typing import Dict, Any
+import sys
+import os
+
+# Add shared module to path
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../shared'))
+from cors import cors_response, handle_options_request, get_cors_headers
 
 s3_client = boto3.client('s3')
 dynamodb = boto3.resource('dynamodb')
@@ -25,6 +31,10 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     """
     import os
     global S3_BUCKET, DYNAMODB_TABLE
+    
+    # Handle OPTIONS preflight request
+    if event.get('httpMethod') == 'OPTIONS' or event.get('requestContext', {}).get('http', {}).get('method') == 'OPTIONS':
+        return handle_options_request()
     
     if not S3_BUCKET:
         S3_BUCKET = os.environ.get('S3_BUCKET_NAME', '')
@@ -52,17 +62,10 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             source_type = body_json.get('source_type', 'image')
         
         if not file_data:
-            return {
-                'statusCode': 400,
-                'headers': {
-                    'Content-Type': 'application/json',
-                    'Access-Control-Allow-Origin': '*'
-                },
-                'body': json.dumps({
-                    'error': 'Missing file data',
-                    'error_code': 'MISSING_FILE'
-                })
-            }
+            return cors_response(400, {
+                'error': 'Missing file data',
+                'error_code': 'MISSING_FILE'
+            })
         
         # Generate blueprint ID
         blueprint_id = body_json.get('blueprint_id') or str(uuid.uuid4())
@@ -106,31 +109,17 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 }
             )
         
-        return {
-            'statusCode': 200,
-            'headers': {
-                'Content-Type': 'application/json',
-                'Access-Control-Allow-Origin': '*'
-            },
-            'body': json.dumps({
-                'job_id': job_id,
-                'blueprint_id': blueprint_id,
-                'status': 'uploaded',
-                's3_key': s3_key,
-                'message': 'Blueprint uploaded successfully'
-            })
-        }
+        return cors_response(200, {
+            'job_id': job_id,
+            'blueprint_id': blueprint_id,
+            'status': 'uploaded',
+            's3_key': s3_key,
+            'message': 'Blueprint uploaded successfully'
+        })
         
     except Exception as e:
-        return {
-            'statusCode': 500,
-            'headers': {
-                'Content-Type': 'application/json',
-                'Access-Control-Allow-Origin': '*'
-            },
-            'body': json.dumps({
-                'error': str(e),
-                'error_code': 'UPLOAD_ERROR'
-            })
-        }
+        return cors_response(500, {
+            'error': str(e),
+            'error_code': 'UPLOAD_ERROR'
+        })
 
