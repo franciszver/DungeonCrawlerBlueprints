@@ -10,7 +10,7 @@ SECRETS_MANAGER_SECRET_NAME = os.environ.get('SECRETS_MANAGER_SECRET_NAME', 'dun
 TRAINING_DATA_BUCKET = os.environ.get('TRAINING_DATA_BUCKET', S3_BUCKET_NAME)
 
 # OpenRouter Configuration
-OPENROUTER_MODEL = os.environ.get('OPENROUTER_MODEL', 'google/gemini-flash-1.5')
+OPENROUTER_MODEL = os.environ.get('OPENROUTER_MODEL', 'anthropic/claude-3-haiku')
 OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions'
 
 # Multi-Model Validation

@@ -147,6 +147,7 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             generate_all = body.get('generate_all', False)
             label_position_adjustments = body.get('label_position_adjustments', {})
             manual_labels = body.get('manual_labels', {})  # Manual labels from frontend
+            skip_matched_filter = body.get('skip_matched_filter', False)  # Allow regenerating matched labels
             
             # Get text labels from job metadata
             metadata = job.get('metadata', {})
@@ -175,13 +176,14 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                     })
                 }
             
-            # Filter out labels already matched to detected rooms
+            # Filter out labels already matched to detected rooms (unless skip_matched_filter is True)
             matched_label_texts = set()
-            for room in existing_rooms:
-                if room.get('name_source') == 'blueprint_text':
-                    matched_label_texts.add(room.get('name_hint', '').lower())
+            if not skip_matched_filter:
+                for room in existing_rooms:
+                    if room.get('name_source') == 'blueprint_text':
+                        matched_label_texts.add(room.get('name_hint', '').lower())
             
-            # Filter labels - skip those already matched, None, or manual labels
+            # Filter labels - skip those already matched (unless skip_matched_filter), None, or manual labels
             available_labels = []
             for idx, label in enumerate(text_labels):
                 if label is None:
@@ -190,11 +192,16 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 is_manual = label.get('is_manual', False)
                 if is_manual and generate_all:
                     continue
-                label_text = label.get('text', '').lower()
-                # Check if this label was already matched (check original_text if available)
-                original_text = label.get('original_text', label_text).lower()
-                if original_text not in matched_label_texts and label_text not in matched_label_texts:
+                
+                # If skip_matched_filter is True, include all labels
+                if skip_matched_filter:
                     available_labels.append((idx, label))
+                else:
+                    # Otherwise, check if this label was already matched
+                    label_text = label.get('text', '').lower()
+                    original_text = label.get('original_text', label_text).lower()
+                    if original_text not in matched_label_texts and label_text not in matched_label_texts:
+                        available_labels.append((idx, label))
             
             if not available_labels:
                 return {
@@ -216,6 +223,14 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 # Use selected indices, but filter to only available labels
                 available_indices = {idx for idx, _ in available_labels}
                 label_indices_to_generate = [idx for idx in selected_label_indices if idx in available_indices]
+            
+            # Debug logging
+            print(f"Selected indices: {selected_label_indices}")
+            print(f"Available labels: {[(idx, label.get('text')) for idx, label in available_labels]}")
+            print(f"Available indices: {available_indices}")
+            print(f"Label indices to generate: {label_indices_to_generate}")
+            print(f"Existing rooms count: {len(existing_rooms)}")
+            print(f"Matched label texts: {matched_label_texts}")
             
             if not label_indices_to_generate:
                 return {

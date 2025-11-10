@@ -18,6 +18,7 @@ interface InteractiveEditorProps {
   blueprintImage: string;
   initialExtendedRooms?: Room[];
   initialModifiedRooms?: Room[];
+  initialTextLabels?: any[];
   onExtendedRoomsChange?: (extendedRooms: Room[]) => void;
 }
 
@@ -28,6 +29,7 @@ export default function InteractiveEditor({
   blueprintImage,
   initialExtendedRooms = [],
   initialModifiedRooms = [],
+  initialTextLabels = [],
   onExtendedRoomsChange,
 }: InteractiveEditorProps) {
   const [extendedRooms, setExtendedRooms] = useState<Room[]>(initialExtendedRooms);
@@ -40,7 +42,11 @@ export default function InteractiveEditor({
   const [minimapVisible, setMinimapVisible] = useState(false);
   const [imageDimensions, setImageDimensions] = useState({ width: 1000, height: 1000 });
   const [controlsMenuOpen, setControlsMenuOpen] = useState(false);
-  const [textLabels, setTextLabels] = useState<any[]>([]);
+  const [textLabels, setTextLabels] = useState<any[]>(() => {
+    console.log('🏷️ InteractiveEditor initializing with labels:', initialTextLabels);
+    console.log('🏷️ Initial label count:', initialTextLabels.length);
+    return initialTextLabels;
+  });
   const [labelPanelCollapsed, setLabelPanelCollapsed] = useState(false);
   const [labelGenerationWarnings, setLabelGenerationWarnings] = useState<string[]>([]);
   const [_generatingLabels, setGeneratingLabels] = useState<Set<number>>(new Set()); // Track labels being generated
@@ -436,8 +442,13 @@ export default function InteractiveEditor({
     setAllDoors(doors || []);
   }, [doors]);
 
-  // Fetch text labels from job metadata
+  // Fetch text labels from job metadata (only if not provided initially)
   useEffect(() => {
+    // If we already have initial labels, don't fetch
+    if (initialTextLabels.length > 0) {
+      return;
+    }
+    
     const fetchTextLabels = async () => {
       try {
         const result = await getResults(jobId);
@@ -452,7 +463,7 @@ export default function InteractiveEditor({
     if (jobId) {
       fetchTextLabels();
     }
-  }, [jobId]);
+  }, [jobId, initialTextLabels]);
 
   // Handler for label dragging
   const handleLabelDragStart = useCallback((labelIndex: number, event: React.MouseEvent) => {
@@ -565,6 +576,7 @@ export default function InteractiveEditor({
           selected_label_indices: selectedIndices,
           label_position_adjustments: adjustedLabelPositions,
           manual_labels: manualLabels,
+          skip_matched_filter: true, // In Interactive Mode, allow regenerating any label
         }),
       });
       

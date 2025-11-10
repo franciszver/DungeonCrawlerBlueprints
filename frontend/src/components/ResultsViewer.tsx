@@ -185,6 +185,12 @@ export default function ResultsViewer({ result, blueprintImage, jobId }: Results
                 blueprintImage={blueprintImage || ''}
                 initialExtendedRooms={[]}
                 initialModifiedRooms={[]}
+                initialTextLabels={(() => {
+                  const labels = result.metadata?.text_labels || [];
+                  console.log('🏷️ Passing labels to InteractiveEditor:', labels);
+                  console.log('🏷️ Number of labels:', labels.length);
+                  return labels;
+                })()}
                 onExtendedRoomsChange={setExtendedRooms}
               />
             </div>
