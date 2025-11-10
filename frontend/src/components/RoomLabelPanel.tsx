@@ -17,6 +17,7 @@ interface RoomLabelPanelProps {
   isCollapsed?: boolean;
   onToggleCollapse?: () => void;
   warnings?: string[]; // Warnings from generation
+  onAddManualLabel?: () => void;
 }
 
 export default function RoomLabelPanel({
@@ -29,6 +30,7 @@ export default function RoomLabelPanel({
   isCollapsed = false,
   onToggleCollapse,
   warnings: externalWarnings = [],
+  onAddManualLabel,
 }: RoomLabelPanelProps) {
   const [selectedIndices, setSelectedIndices] = useState<Set<number>>(new Set());
   const [isGenerating, setIsGenerating] = useState(false);
@@ -39,21 +41,20 @@ export default function RoomLabelPanel({
     setWarnings(externalWarnings);
   }, [externalWarnings]);
 
-  // Filter out labels already matched to detected rooms
-  const matchedLabelTexts = new Set<string>();
+  // Track which labels have generated rooms (by label_index)
+  const generatedLabelIndices = new Set<number>();
   existingRooms.forEach((room) => {
-    if (room.name_source === 'blueprint_text') {
-      matchedLabelTexts.add((room.name_hint || '').toLowerCase());
+    if (room.is_extended && (room as any).label_index !== undefined) {
+      generatedLabelIndices.add((room as any).label_index);
     }
   });
 
-  const availableLabels = textLabels
-    .map((label, idx) => ({ idx, label }))
-    .filter(({ label }) => {
-      const labelText = (label.text || '').toLowerCase();
-      const originalText = (label.original_text || labelText).toLowerCase();
-      return !matchedLabelTexts.has(originalText) && !matchedLabelTexts.has(labelText);
-    });
+  // Show ALL labels, but mark which ones are generated
+  const allLabels = textLabels.map((label, idx) => ({ 
+    idx, 
+    label, 
+    isGenerated: generatedLabelIndices.has(idx)
+  }));
 
   const handleToggleSelection = (idx: number) => {
     const newSelected = new Set(selectedIndices);
@@ -100,26 +101,12 @@ export default function RoomLabelPanel({
     }
   };
 
-  // Show panel if there are any labels (available or matched)
-  // This way users can see what labels were found even if all are matched
-  if (textLabels.length === 0) {
-    return null; // Don't show panel if no labels at all
-  }
-
-  // Get matched labels for display
-  const matchedLabels = textLabels
-    .map((label, idx) => ({ idx, label }))
-    .filter(({ label }) => {
-      const labelText = (label.text || '').toLowerCase();
-      const originalText = (label.original_text || labelText).toLowerCase();
-      return matchedLabelTexts.has(originalText) || matchedLabelTexts.has(labelText);
-    });
-
+  // Always show panel so user can add manual labels
   return (
-    <div className="fixed left-4 top-20 w-80 bg-white rounded-lg shadow-2xl border border-gray-200 z-50">
+    <div className="fixed right-4 top-4 w-80 bg-white rounded-lg shadow-2xl border border-gray-200 z-50">
       {/* Header with collapse button */}
-      <div className="flex items-center justify-between p-4 border-b border-gray-200">
-        <h3 className="text-lg font-semibold text-gray-900">Generate from Labels</h3>
+      <div className="flex items-center justify-between p-3 border-b border-gray-200 bg-gradient-to-r from-blue-50 to-blue-100">
+        <h3 className="text-sm font-semibold text-gray-900">📝 Room Labels</h3>
         {onToggleCollapse && (
           <button
             onClick={onToggleCollapse}
@@ -142,24 +129,28 @@ export default function RoomLabelPanel({
       {!isCollapsed && (
         <>
           {/* Info */}
-          <div className="p-4 bg-blue-50 border-b border-gray-200">
-            <p className="text-sm text-gray-700">
-              {availableLabels.length > 0 ? (
-                <>
-                  {availableLabels.length} room label{availableLabels.length !== 1 ? 's' : ''} available for generation
-                </>
-              ) : (
-                <>
-                  All {textLabels.length} label{textLabels.length !== 1 ? 's' : ''} already matched to detected rooms
-                </>
-              )}
-            </p>
-            {matchedLabelTexts.size > 0 && (
-              <p className="text-xs text-gray-600 mt-1">
-                {matchedLabelTexts.size} label{matchedLabelTexts.size !== 1 ? 's' : ''} already matched to detected rooms
-              </p>
-            )}
-          </div>
+          {textLabels.length > 0 && (
+            <div className="p-3 bg-blue-50 border-b border-gray-200">
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-gray-700">
+                  <span className="font-semibold">{allLabels.length}</span> label{allLabels.length !== 1 ? 's' : ''}
+                </span>
+                {generatedLabelIndices.size > 0 && (
+                  <span className="text-green-700">
+                    <span className="font-semibold">{generatedLabelIndices.size}</span> generated
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
+          
+          {/* Empty state message */}
+          {textLabels.length === 0 && (
+            <div className="p-4 text-center text-gray-500 text-sm">
+              <p className="mb-2">No labels detected</p>
+              <p className="text-xs">Click "Add Manual Label" below to create one</p>
+            </div>
+          )}
 
           {/* Warnings */}
           {warnings.length > 0 && (
@@ -170,48 +161,75 @@ export default function RoomLabelPanel({
             </div>
           )}
 
-          {/* Available Labels List */}
-          {availableLabels.length > 0 && (
-            <div className="max-h-96 overflow-y-auto p-4">
-              <h4 className="text-sm font-semibold text-gray-700 mb-2">Available to Generate:</h4>
-              {availableLabels.map(({ idx, label }) => {
+          {/* All Labels List */}
+          {allLabels.length > 0 && (
+            <div className="max-h-96 overflow-y-auto p-3">
+              {allLabels.map(({ idx, label, isGenerated }) => {
                 const isSelected = selectedIndices.has(idx);
-                // Status could be 'ready' or 'warning' based on boundary validation in the future
                 const hasWarning = warnings.some(w => w.toLowerCase().includes(label.text.toLowerCase()));
 
                 return (
                   <div
                     key={idx}
-                    className={`mb-2 p-3 rounded-md border cursor-pointer transition-colors ${
-                      isSelected
-                        ? 'border-blue-500 bg-blue-50'
-                        : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50'
+                    className={`mb-2 p-2 rounded border transition-colors ${
+                      isGenerated
+                        ? 'border-green-300 bg-green-50'
+                        : isSelected
+                        ? 'border-blue-500 bg-blue-50 cursor-pointer'
+                        : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50 cursor-pointer'
                     }`}
-                    onClick={() => handleToggleSelection(idx)}
+                    onClick={() => !isGenerated && handleToggleSelection(idx)}
                   >
-                    <div className="flex items-start gap-3">
-                      <input
-                        type="checkbox"
-                        checked={isSelected}
-                        onChange={() => handleToggleSelection(idx)}
-                        className="mt-1 h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
-                        onClick={(e) => e.stopPropagation()}
-                      />
+                    <div className="flex items-center gap-2">
+                      {!isGenerated && (
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          onChange={() => handleToggleSelection(idx)}
+                          className="h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500 flex-shrink-0"
+                          onClick={(e) => e.stopPropagation()}
+                        />
+                      )}
+                      {isGenerated && (
+                        <svg className="w-4 h-4 text-green-600 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                        </svg>
+                      )}
                       <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2">
-                          <span className="font-medium text-gray-900">{label.text}</span>
-                          {hasWarning && (
-                            <span className="text-xs px-2 py-0.5 bg-yellow-100 text-yellow-800 rounded">
-                              Warning
-                            </span>
-                          )}
-                        </div>
-                        <div className="flex items-center gap-4 mt-1">
-                          <span className="text-xs text-gray-500">
-                            Confidence: {(label.confidence * 100).toFixed(0)}%
-                          </span>
-                        </div>
+                        <span className={`text-sm font-medium ${isGenerated ? 'text-green-800' : 'text-gray-900'}`}>
+                          {label.text}
+                        </span>
+                        {hasWarning && !isGenerated && (
+                          <span className="ml-2 text-xs text-yellow-600">⚠️</span>
+                        )}
                       </div>
+                      {!isGenerated && (
+                        <button
+                          onClick={async (e) => {
+                            e.stopPropagation();
+                            setIsGenerating(true);
+                            setWarnings([]);
+                            try {
+                              await onGenerate([idx]);
+                              setSelectedIndices(prev => {
+                                const newSet = new Set(prev);
+                                newSet.delete(idx);
+                                return newSet;
+                              });
+                            } catch (error) {
+                              console.error('Error generating room:', error);
+                              setWarnings([`Error: ${error instanceof Error ? error.message : 'Unknown error'}`]);
+                            } finally {
+                              setIsGenerating(false);
+                            }
+                          }}
+                          disabled={isGenerating}
+                          className="px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors flex-shrink-0"
+                          title="Generate this room"
+                        >
+                          {isGenerating ? '⏳' : '✨'}
+                        </button>
+                      )}
                     </div>
                   </div>
                 );
@@ -219,34 +237,21 @@ export default function RoomLabelPanel({
             </div>
           )}
 
-          {/* Matched Labels List (for reference) */}
-          {matchedLabels.length > 0 && (
-            <div className="p-4 border-t border-gray-200">
-              <h4 className="text-sm font-semibold text-gray-700 mb-2">Already Matched:</h4>
-              <div className="max-h-48 overflow-y-auto space-y-1">
-                {matchedLabels.map(({ idx, label }) => (
-                  <div
-                    key={idx}
-                    className="p-2 rounded-md bg-gray-50 border border-gray-200"
-                  >
-                    <div className="flex items-center gap-2">
-                      <svg className="w-4 h-4 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                      </svg>
-                      <span className="text-sm text-gray-700">{label.text}</span>
-                      <span className="text-xs text-gray-500 ml-auto">
-                        {(label.confidence * 100).toFixed(0)}%
-                      </span>
-                    </div>
-                  </div>
-                ))}
-              </div>
+          {/* Add Manual Label Button */}
+          {onAddManualLabel && (
+            <div className="p-3 border-t border-gray-200">
+              <button
+                onClick={onAddManualLabel}
+                className="w-full px-3 py-2 bg-gray-100 text-gray-700 rounded-md hover:bg-gray-200 transition-colors text-sm font-medium"
+              >
+                ➕ Add Manual Label
+              </button>
             </div>
           )}
 
           {/* Actions */}
-          {availableLabels.length > 0 && (
-            <div className="p-4 border-t border-gray-200 space-y-2">
+          {allLabels.filter(l => !l.isGenerated).length > 0 && (
+            <div className="p-3 border-t border-gray-200 space-y-2">
               <button
                 onClick={handleGenerateSelected}
                 disabled={selectedIndices.size === 0 || isGenerating}
@@ -263,7 +268,7 @@ export default function RoomLabelPanel({
               </button>
               <button
                 onClick={handleGenerateAll}
-                disabled={isGenerating}
+                disabled={isGenerating || allLabels.filter(l => !l.isGenerated).length === 0}
                 className="w-full px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
               >
                 {isGenerating ? (
@@ -272,7 +277,7 @@ export default function RoomLabelPanel({
                     Generating...
                   </span>
                 ) : (
-                  'Generate All Rooms'
+                  `Generate All Remaining (${allLabels.filter(l => !l.isGenerated).length})`
                 )}
               </button>
               {onClose && (

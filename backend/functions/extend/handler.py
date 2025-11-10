@@ -145,12 +145,24 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             
             selected_label_indices = body.get('selected_label_indices', [])
             generate_all = body.get('generate_all', False)
+            label_position_adjustments = body.get('label_position_adjustments', {})
+            manual_labels = body.get('manual_labels', {})  # Manual labels from frontend
             
             # Get text labels from job metadata
             metadata = job.get('metadata', {})
-            text_labels = metadata.get('text_labels', [])
+            text_labels = list(metadata.get('text_labels', []))  # Convert to list for modification
             
-            if not text_labels:
+            # Merge manual labels into text_labels list
+            # Manual labels are sent as a dict with index as key
+            for idx_str, manual_label in manual_labels.items():
+                idx = int(idx_str)
+                # Extend text_labels list if needed
+                while len(text_labels) <= idx:
+                    text_labels.append(None)
+                # Insert manual label at the correct index
+                text_labels[idx] = manual_label
+            
+            if not text_labels or all(label is None for label in text_labels):
                 return {
                     'statusCode': 400,
                     'headers': {
@@ -169,9 +181,15 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 if room.get('name_source') == 'blueprint_text':
                     matched_label_texts.add(room.get('name_hint', '').lower())
             
-            # Filter labels - skip those already matched
+            # Filter labels - skip those already matched, None, or manual labels
             available_labels = []
             for idx, label in enumerate(text_labels):
+                if label is None:
+                    continue
+                # Skip manual labels for "generate all" - they should be generated individually
+                is_manual = label.get('is_manual', False)
+                if is_manual and generate_all:
+                    continue
                 label_text = label.get('text', '').lower()
                 # Check if this label was already matched (check original_text if available)
                 original_text = label.get('original_text', label_text).lower()
@@ -245,7 +263,8 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 label_indices_to_generate,
                 text_labels,
                 all_rooms,
-                canvas_bounds
+                canvas_bounds,
+                label_position_adjustments
             )
             
             generated_rooms = result.get('rooms', [])

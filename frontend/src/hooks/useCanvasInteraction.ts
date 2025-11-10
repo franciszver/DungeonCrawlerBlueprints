@@ -118,8 +118,8 @@ export const useCanvasInteraction = ({
       return; // Don't do anything else in Add Corner mode if not on edge
     }
 
-    // Find nearest corner (within 20px threshold)
-    const cornerIndex = findNearestCorner(room.polygon, mousePos, 20);
+    // Find nearest corner (within 30px threshold for easier clicking)
+    const cornerIndex = findNearestCorner(room.polygon, mousePos, 30);
     
     // Priority 1: Corner dragging (highest priority)
     if (cornerIndex !== null) {
@@ -344,6 +344,11 @@ export const useCanvasInteraction = ({
     event: React.MouseEvent<SVGElement>,
     room: Room
   ) => {
+    // Disable hover interactions while dragging
+    if (isDragging) {
+      return;
+    }
+    
     if (!isInteractive || !room.polygon) {
       setHoveredEdge(null);
       return;
@@ -378,12 +383,17 @@ export const useCanvasInteraction = ({
     } else {
       setHoveredEdge(null);
     }
-  }, [isInteractive]);
+  }, [isInteractive, isDragging]);
 
   const handleRoomHover = useCallback((room: Room | null) => {
+    // Disable hover interactions while dragging
+    if (isDragging) {
+      return;
+    }
+    
     if (!isInteractive) return;
     setHoveredRoom(room);
-  }, [isInteractive]);
+  }, [isInteractive, isDragging]);
 
   const handleDoorHover = useCallback((doorId: string | null) => {
     if (!isInteractive) return;

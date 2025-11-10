@@ -3,6 +3,13 @@ import { polygonToSVGPath, bboxToRect, getRoomColor, getBboxCenter, formatConfid
 import DoorMarker from './DoorMarker';
 import type { Room, Door } from '../types';
 
+interface TextLabel {
+  text: string;
+  bbox: [number, number, number, number];
+  confidence?: number;
+  original_text?: string;
+}
+
 interface RoomCanvasProps {
   rooms: Room[];
   doors: Door[];
@@ -17,7 +24,17 @@ interface RoomCanvasProps {
   onMouseDown?: (event: React.MouseEvent<SVGElement>, room: Room) => void;
   onMouseMove?: (event: React.MouseEvent<SVGElement>) => void;
   onMouseUp?: () => void;
+  onCanvasClick?: (event: React.MouseEvent<SVGElement>) => void;
   onDoorDelete?: (doorId: string) => void;
+  onRoomDelete?: (roomId: string) => void;
+  textLabels?: TextLabel[]; // Labels to display on blueprint
+  onLabelClick?: (labelIndex: number) => void; // Click handler for labels
+  labelOffsets?: Map<number, { x: number; y: number }>; // User-adjusted label positions
+  onLabelDragStart?: (labelIndex: number, event: React.MouseEvent) => void;
+  onLabelDrag?: (event: React.MouseEvent) => void;
+  onLabelDragEnd?: () => void;
+  draggingLabel?: number | null;
+  labelDragStartPos?: { x: number; y: number } | null;
   addDoorMode?: boolean;
   svgRef?: React.RefObject<SVGSVGElement>;
   hoveredEdge?: { roomId: string; edgeIndex: number } | null;
@@ -44,7 +61,17 @@ export default function RoomCanvas({
   onMouseDown,
   onMouseMove,
   onMouseUp,
+  onCanvasClick,
   onDoorDelete,
+  onRoomDelete,
+  textLabels = [],
+  onLabelClick,
+  labelOffsets = new Map(),
+  onLabelDragStart,
+  onLabelDrag,
+  onLabelDragEnd,
+  draggingLabel = null,
+  labelDragStartPos = null,
   addDoorMode = false,
   svgRef,
   hoveredEdge,
@@ -60,18 +87,53 @@ export default function RoomCanvas({
   onPanEnd,
 }: RoomCanvasProps & { dragPreview?: any; isDragging?: boolean; isMovingRoom?: boolean }) {
   const [imageDimensions, setImageDimensions] = React.useState({ width: 1000, height: 1000 });
+  const [imageLoaded, setImageLoaded] = React.useState(false);
   const imageRef = React.useRef<SVGImageElement>(null);
+  const labelWasDragged = React.useRef<boolean>(false);
 
   // Load image dimensions when blueprint changes
   React.useEffect(() => {
     if (blueprintImage) {
+      setImageLoaded(false);
       const img = new Image();
       img.onload = () => {
+        console.log('Image loaded with natural dimensions:', img.width, 'x', img.height);
         setImageDimensions({ width: img.width, height: img.height });
+        setImageLoaded(true);
+      };
+      img.onerror = () => {
+        console.error('Failed to load image');
+        setImageLoaded(true); // Still set to true to avoid blocking
       };
       img.src = blueprintImage;
     }
   }, [blueprintImage]);
+  
+  // Update dimensions when SVG image element loads (to get actual displayed size)
+  React.useEffect(() => {
+    const svgImage = imageRef.current;
+    if (svgImage && imageLoaded) {
+      const updateDimensions = () => {
+        const displayedWidth = svgImage.width?.baseVal?.value;
+        const displayedHeight = svgImage.height?.baseVal?.value;
+        
+        if (displayedWidth && displayedHeight) {
+          console.log('SVG image element dimensions:', displayedWidth, 'x', displayedHeight);
+          // Use the SVG element's dimensions if they differ from natural size
+          if (displayedWidth !== imageDimensions.width || displayedHeight !== imageDimensions.height) {
+            console.log('Updating to displayed dimensions');
+            setImageDimensions({ width: displayedWidth, height: displayedHeight });
+          }
+        }
+      };
+      
+      // Check immediately and also on load
+      // SVG images don't have a 'complete' property, so just call updateDimensions
+      updateDimensions();
+      svgImage.addEventListener('load', updateDimensions);
+      return () => svgImage.removeEventListener('load', updateDimensions);
+    }
+  }, [imageLoaded, imageDimensions]);
   
   const getRoomOpacity = (room: Room) => {
     if (!isInteractive) return 0.3;
@@ -113,6 +175,20 @@ export default function RoomCanvas({
   };
 
   const handleMouseMove = (event: React.MouseEvent<SVGElement>) => {
+    // Handle label dragging first
+    if (onLabelDrag && draggingLabel !== null) {
+      // Check if mouse moved significantly (more than 3 pixels)
+      if (labelDragStartPos) {
+        const dx = event.clientX - labelDragStartPos.x;
+        const dy = event.clientY - labelDragStartPos.y;
+        const distance = Math.sqrt(dx * dx + dy * dy);
+        if (distance > 3) {
+          labelWasDragged.current = true;
+        }
+      }
+      onLabelDrag(event);
+    }
+    
     if (onPanMove) {
       onPanMove(event);
     }
@@ -122,6 +198,15 @@ export default function RoomCanvas({
   };
 
   const handleMouseUp = () => {
+    // End label dragging first
+    if (onLabelDragEnd && draggingLabel !== null) {
+      onLabelDragEnd();
+      // Reset drag flag after a short delay to allow onClick to check it
+      setTimeout(() => {
+        labelWasDragged.current = false;
+      }, 10);
+    }
+    
     if (onPanEnd) {
       onPanEnd();
     }
@@ -138,6 +223,16 @@ export default function RoomCanvas({
         className="w-full h-full"
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
+        onClick={(e) => {
+          // Handle canvas click for manual label addition
+          if (onCanvasClick) {
+            const target = e.target as SVGElement;
+            // Only trigger if clicking on the background (not on rooms, doors, or labels)
+            if (target.tagName === 'svg' || target.tagName === 'image' || target.classList.contains('canvas-background')) {
+              onCanvasClick(e);
+            }
+          }
+        }}
         onMouseDown={(e) => {
           // Find room under mouse if any
           const target = e.target as SVGElement;
@@ -233,13 +328,27 @@ export default function RoomCanvas({
             <g
               key={room.id}
               data-room-id={room.id}
-              onMouseEnter={() => onRoomHover(room)}
-              onMouseLeave={() => onRoomHover(null)}
-              onMouseMove={(e) => {
-                e.stopPropagation();
-                onRoomMouseMove?.(e, room);
+              onMouseEnter={() => {
+                // Disable hover for other rooms while dragging
+                if (!isDragging) {
+                  onRoomHover(room);
+                }
               }}
-              className={isInteractive ? 'cursor-pointer' : ''}
+              onMouseLeave={() => {
+                // Disable hover for other rooms while dragging
+                if (!isDragging) {
+                  onRoomHover(null);
+                }
+              }}
+              onMouseMove={(e) => {
+                // Disable hover for other rooms while dragging
+                if (!isDragging) {
+                  e.stopPropagation();
+                  onRoomMouseMove?.(e, room);
+                }
+              }}
+              className={isInteractive && !isDragging ? 'cursor-pointer' : ''}
+              style={{ pointerEvents: isDragging ? 'none' : 'auto' }}
             >
               {/* Render polygon if available, otherwise bounding box */}
               {room.polygon && room.polygon.length > 0 ? (
@@ -271,71 +380,6 @@ export default function RoomCanvas({
                 })()
               )}
 
-              {/* Room label - use label_position if available (for generated rooms), otherwise use center */}
-              {room.name_hint && (() => {
-                // Use label_position if available (for label-based generated rooms)
-                // Otherwise use polygon/bbox center
-                let labelPos: [number, number];
-                if ((room as any).label_position && Array.isArray((room as any).label_position) && (room as any).label_position.length === 2) {
-                  // Label positions are normalized to 0-1000, scale to match image dimensions
-                  const normalizedX = (room as any).label_position[0];
-                  const normalizedY = (room as any).label_position[1];
-                  // Scale from normalized (0-1000) to actual image dimensions
-                  const scaleX = imageDimensions.width / 1000;
-                  const scaleY = imageDimensions.height / 1000;
-                  labelPos = [normalizedX * scaleX, normalizedY * scaleY];
-                } else {
-                  const center = room.polygon 
-                    ? getBboxCenter([
-                        Math.min(...room.polygon.map(p => p[0])),
-                        Math.min(...room.polygon.map(p => p[1])),
-                        Math.max(...room.polygon.map(p => p[0])),
-                        Math.max(...room.polygon.map(p => p[1])),
-                      ])
-                    : getBboxCenter(room.bounding_box);
-                  // Scale room center if coordinates are normalized (0-1000)
-                  const maxCoord = Math.max(
-                    ...(room.polygon?.flat() || room.bounding_box || [0, 0, 0, 0])
-                  );
-                  if (maxCoord <= 1000 && imageDimensions.width > 1000) {
-                    // Coordinates are normalized, scale them
-                    const scaleX = imageDimensions.width / 1000;
-                    const scaleY = imageDimensions.height / 1000;
-                    labelPos = [center[0] * scaleX, center[1] * scaleY];
-                  } else {
-                    labelPos = center;
-                  }
-                }
-                
-                return (
-                  <g>
-                    {/* Background rectangle for better readability */}
-                    <rect
-                      x={labelPos[0] - 40}
-                      y={labelPos[1] - 10}
-                      width={80}
-                      height={20}
-                      fill="white"
-                      fillOpacity="0.8"
-                      stroke="none"
-                      pointerEvents="none"
-                    />
-                    <text
-                      x={labelPos[0]}
-                      y={labelPos[1]}
-                      textAnchor="middle"
-                      dominantBaseline="middle"
-                      fill="#1e40af"
-                      fontSize="14"
-                      fontWeight="600"
-                      fontFamily="Arial, sans-serif"
-                      pointerEvents="none"
-                    >
-                      {room.name_hint}
-                    </text>
-                  </g>
-                );
-              })()}
 
               {/* Confidence badge */}
               {room.confidence !== undefined && (() => {
@@ -384,14 +428,150 @@ export default function RoomCanvas({
                   key={`${room.id}-corner-${index}`}
                   cx={point[0]}
                   cy={point[1]}
-                  r="5"
+                  r={hoveredRoom?.id === room.id ? "8" : "6"}
                   fill="white"
                   stroke={color}
-                  strokeWidth="2"
-                  className="cursor-move"
-                  style={{ display: hoveredRoom?.id === room.id ? 'block' : 'none' }}
+                  strokeWidth={hoveredRoom?.id === room.id ? "3" : "2"}
+                  className="cursor-nwse-resize"
+                  style={{ opacity: hoveredRoom?.id === room.id ? 1 : 0.7 }}
                 />
               ))}
+
+              {/* Delete button for generated/extended rooms */}
+              {isInteractive && onRoomDelete && room.is_extended && hoveredRoom?.id === room.id && (
+                (() => {
+                  const center = room.polygon 
+                    ? getBboxCenter([
+                        Math.min(...room.polygon.map(p => p[0])),
+                        Math.min(...room.polygon.map(p => p[1])),
+                        Math.max(...room.polygon.map(p => p[0])),
+                        Math.max(...room.polygon.map(p => p[1])),
+                      ])
+                    : getBboxCenter(room.bounding_box);
+                  
+                  return (
+                    <g 
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onRoomDelete(room.id);
+                      }}
+                      className="cursor-pointer"
+                    >
+                      {/* Invisible larger clickable area */}
+                      <circle
+                        cx={center[0] + 20}
+                        cy={center[1] - 20}
+                        r={12}
+                        fill="transparent"
+                        pointerEvents="all"
+                      />
+                      {/* Visible delete button */}
+                      <circle
+                        cx={center[0] + 20}
+                        cy={center[1] - 20}
+                        r={8}
+                        fill="#ef4444"
+                        stroke="white"
+                        strokeWidth={2}
+                        pointerEvents="none"
+                      />
+                      <line
+                        x1={center[0] + 16}
+                        y1={center[1] - 20}
+                        x2={center[0] + 24}
+                        y2={center[1] - 20}
+                        stroke="white"
+                        strokeWidth={2}
+                        strokeLinecap="round"
+                        pointerEvents="none"
+                      />
+                    </g>
+                  );
+                })()
+              )}
+            </g>
+          );
+        })}
+
+        {/* Text Labels (overlaid on blueprint - always visible) */}
+        {isInteractive && imageLoaded && textLabels && textLabels.length > 0 && textLabels.map((label, idx) => {
+          // Check if this label has a generated room
+          const hasGeneratedRoom = rooms.some(
+            r => r.is_extended && (r as any).label_index === idx
+          );
+          
+          // Calculate label center from bbox
+          // Backend returns coordinates in actual image pixel space
+          const [x_min, y_min, x_max, y_max] = label.bbox;
+          let labelX = (x_min + x_max) / 2;
+          let labelY = (y_min + y_max) / 2;
+          
+          // Apply user drag offset if exists
+          const offset = labelOffsets.get(idx);
+          if (offset) {
+            labelX += offset.x;
+            labelY += offset.y;
+          }
+          
+          const isDragging = draggingLabel === idx;
+          
+          return (
+            <g
+              key={`label-${idx}`}
+              onClick={(e) => {
+                e.stopPropagation();
+                // Only trigger click if label wasn't dragged
+                if (onLabelClick && !hasGeneratedRoom && !labelWasDragged.current) {
+                  onLabelClick(idx);
+                }
+              }}
+              onMouseDown={(e) => {
+                if (onLabelDragStart && !hasGeneratedRoom) {
+                  labelWasDragged.current = false; // Reset on mouse down
+                  onLabelDragStart(idx, e);
+                }
+              }}
+              className={hasGeneratedRoom ? "" : "cursor-move"}
+              style={{ opacity: isDragging ? 0.6 : 0.85 }}
+            >
+              {/* Background circle for label - reduced size and opacity */}
+              <circle
+                cx={labelX}
+                cy={labelY}
+                r={15}
+                fill={hasGeneratedRoom ? "rgba(34, 197, 94, 0.15)" : "rgba(59, 130, 246, 0.15)"}
+                stroke={hasGeneratedRoom ? "#22c55e" : "#3b82f6"}
+                strokeWidth={1.5}
+                className={hasGeneratedRoom ? "" : "hover:fill-blue-300 transition-colors"}
+              />
+              {/* Label text - smaller and more subtle */}
+              <text
+                x={labelX}
+                y={labelY}
+                textAnchor="middle"
+                dominantBaseline="middle"
+                fill={hasGeneratedRoom ? "#15803d" : "#1e40af"}
+                fontSize="10"
+                fontWeight="500"
+                fontFamily="Arial, sans-serif"
+                pointerEvents="none"
+                style={{ textShadow: '0 0 2px white' }}
+              >
+                {label.text}
+              </text>
+              {/* Status indicator - smaller */}
+              <text
+                x={labelX}
+                y={labelY + 18}
+                textAnchor="middle"
+                fill={hasGeneratedRoom ? "#22c55e" : "#64748b"}
+                fontSize="8"
+                fontFamily="Arial, sans-serif"
+                pointerEvents="none"
+                style={{ textShadow: '0 0 2px white' }}
+              >
+                {hasGeneratedRoom ? "✓" : "○"}
+              </text>
             </g>
           );
         })}

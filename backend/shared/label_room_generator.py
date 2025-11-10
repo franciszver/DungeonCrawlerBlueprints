@@ -10,6 +10,7 @@ if shared_path not in sys.path:
     sys.path.insert(0, shared_path)
 
 from edge_detector_lightweight import detect_room_from_label_center, _validate_room_boundaries
+from rectangular_room_generator import generate_rectangular_room_from_label
 from config import MAX_CANVAS_WIDTH, MAX_CANVAS_HEIGHT
 
 logger = logging.getLogger(__name__)
@@ -20,10 +21,11 @@ def generate_rooms_from_selected_labels(
     selected_label_indices: List[int],
     all_text_labels: List[Dict[str, Any]],
     existing_rooms: List[Dict[str, Any]],
-    canvas_bounds: Optional[List[float]] = None
+    canvas_bounds: Optional[List[float]] = None,
+    label_position_adjustments: Optional[Dict[str, Dict[str, float]]] = None
 ) -> Dict[str, Any]:
     """
-    Generate rooms from selected text labels using flood-fill edge detection.
+    Generate rooms from selected text labels using rectangular expansion.
     
     Args:
         image_base64: Base64-encoded blueprint image
@@ -31,6 +33,7 @@ def generate_rooms_from_selected_labels(
         all_text_labels: All extracted text labels from blueprint
         existing_rooms: List of existing rooms (for boundary constraints)
         canvas_bounds: [x_min, y_min, x_max, y_max] canvas boundaries (defaults to MAX_CANVAS_WIDTH/HEIGHT)
+        label_position_adjustments: Dict mapping label index (as string) to {x, y} offset adjustments
         
     Returns:
         Dictionary with:
@@ -39,6 +42,9 @@ def generate_rooms_from_selected_labels(
     """
     if canvas_bounds is None:
         canvas_bounds = [0, 0, MAX_CANVAS_WIDTH, MAX_CANVAS_HEIGHT]
+    
+    if label_position_adjustments is None:
+        label_position_adjustments = {}
     
     generated_rooms = []
     warnings = []
@@ -57,9 +63,18 @@ def generate_rooms_from_selected_labels(
             warnings.append(f"Label '{label_text}' has invalid bounding box")
             continue
         
-        # Get center position from label bbox
-        center_x = (bbox[0] + bbox[2]) / 2
-        center_y = (bbox[1] + bbox[3]) / 2
+        # Get center position from label bbox (convert from Decimal to float for DynamoDB compatibility)
+        center_x = float((bbox[0] + bbox[2]) / 2)
+        center_y = float((bbox[1] + bbox[3]) / 2)
+        
+        # Apply user adjustments if present
+        adjustment_key = str(label_idx)
+        if adjustment_key in label_position_adjustments:
+            adjustment = label_position_adjustments[adjustment_key]
+            center_x += float(adjustment.get('x', 0))
+            center_y += float(adjustment.get('y', 0))
+            logger.info(f"Applied position adjustment to label '{label_text}': offset=({adjustment.get('x', 0):.1f}, {adjustment.get('y', 0):.1f})")
+        
         label_center = [center_x, center_y]
         
         # Check if label center is outside canvas bounds
@@ -68,28 +83,43 @@ def generate_rooms_from_selected_labels(
             warnings.append(f"Label '{label_text}' center is outside canvas bounds - skipping")
             continue
         
-        # Detect room boundaries using flood-fill
-        logger.info(f"Detecting room boundaries for label '{label_text}' at [{center_x:.1f}, {center_y:.1f}]")
-        polygon, error_msg = detect_room_from_label_center(
+        # Generate rectangular room by expanding from label center
+        logger.info(f"Generating rectangular room for label '{label_text}' at [{center_x:.1f}, {center_y:.1f}]")
+        polygon, error_msg = generate_rectangular_room_from_label(
             label_center,
             image_base64,
             existing_rooms,
             canvas_bounds,
-            timeout_seconds=5
+            image_format='png',
+            step_size=5
         )
         
-        # Validate boundaries
-        edges_detected = polygon is not None and error_msg is None
-        is_valid, validation_error = _validate_room_boundaries(
-            polygon,
-            existing_rooms,
-            edges_detected
-        )
-        
-        if not is_valid or polygon is None:
-            warning_msg = validation_error or error_msg or "Cannot determine room boundaries"
-            warnings.append(f"Label '{label_text}': {warning_msg} - enable surrounding rooms first")
+        # Validate boundaries (for rectangular rooms, we're more lenient)
+        if polygon is None:
+            warning_msg = error_msg or "Cannot determine room boundaries"
+            warnings.append(f"Label '{label_text}': {warning_msg}")
             continue
+        
+        # Basic validation - check if rectangle is reasonable size
+        # If too small, create a minimum viable room (100x100) centered on label
+        bbox = _polygon_to_bbox(polygon)
+        if len(bbox) == 4:
+            x_min, y_min, x_max, y_max = bbox
+            width = x_max - x_min
+            height = y_max - y_min
+            MIN_ROOM_SIZE = 100  # Minimum room size in pixels
+            
+            if width < MIN_ROOM_SIZE or height < MIN_ROOM_SIZE:
+                # Create minimum viable square room centered on label
+                logger.info(f"Room too small ({width:.0f}x{height:.0f}), creating minimum viable room ({MIN_ROOM_SIZE}x{MIN_ROOM_SIZE})")
+                half_size = MIN_ROOM_SIZE / 2
+                polygon = [
+                    [center_x - half_size, center_y - half_size],
+                    [center_x + half_size, center_y - half_size],
+                    [center_x + half_size, center_y + half_size],
+                    [center_x - half_size, center_y + half_size]
+                ]
+                warnings.append(f"Label '{label_text}': Created minimum room size ({MIN_ROOM_SIZE}x{MIN_ROOM_SIZE}) - adjust as needed")
         
         # Create room object
         room = {

@@ -10,7 +10,7 @@ SECRETS_MANAGER_SECRET_NAME = os.environ.get('SECRETS_MANAGER_SECRET_NAME', 'dun
 TRAINING_DATA_BUCKET = os.environ.get('TRAINING_DATA_BUCKET', S3_BUCKET_NAME)
 
 # OpenRouter Configuration
-OPENROUTER_MODEL = os.environ.get('OPENROUTER_MODEL', 'openai/gpt-4o')
+OPENROUTER_MODEL = os.environ.get('OPENROUTER_MODEL', 'google/gemini-flash-1.5')
 OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions'
 
 # Multi-Model Validation
@@ -22,8 +22,9 @@ CONFIDENCE_THRESHOLD = float(os.environ.get('CONFIDENCE_THRESHOLD', '0.75'))
 MAX_RETRY_ATTEMPTS = int(os.environ.get('MAX_RETRY_ATTEMPTS', '2'))
 
 # Detection Features
+ENABLE_ROOM_DETECTION = os.environ.get('ENABLE_ROOM_DETECTION', 'false').lower() == 'true'
 ENABLE_POLYGON_DETECTION = os.environ.get('ENABLE_POLYGON_DETECTION', 'true').lower() == 'true'
-ENABLE_DOOR_DETECTION = os.environ.get('ENABLE_DOOR_DETECTION', 'true').lower() == 'true'
+ENABLE_DOOR_DETECTION = os.environ.get('ENABLE_DOOR_DETECTION', 'false').lower() == 'true'
 FEW_SHOT_EXAMPLE_COUNT = int(os.environ.get('FEW_SHOT_EXAMPLE_COUNT', '5'))
 
 # Coordinate System

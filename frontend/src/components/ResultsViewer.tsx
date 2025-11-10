@@ -12,6 +12,7 @@ export default function ResultsViewer({ result, blueprintImage, jobId }: Results
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [viewMode, setViewMode] = useState<'static' | 'interactive'>('static');
   const [extendedRooms, setExtendedRooms] = useState<Room[]>([]);
+  const [showInteractiveModeWarning, setShowInteractiveModeWarning] = useState(false);
 
   useEffect(() => {
     if (!canvasRef.current || !blueprintImage || !result.rooms || viewMode === 'interactive') return;
@@ -122,9 +123,19 @@ export default function ResultsViewer({ result, blueprintImage, jobId }: Results
     );
   }
 
-  if (result.status === 'completed' && result.rooms) {
-    const allRooms = [...result.rooms, ...extendedRooms];
-    const hasDoorsAndInteractive = result.doors && result.doors.length > 0 && jobId;
+  if (result.status === 'completed') {
+    // Combine all rooms: original detected + extended from backend + modified from backend + extended from interactive mode
+    const allRooms = [
+      ...(result.rooms || []),
+      ...(result.extended_rooms || []),
+      ...(result.modified_rooms || []),
+      ...extendedRooms
+    ];
+    // Show interactive mode if there are doors, text labels, or any rooms detected
+    const hasTextLabels = result.metadata?.text_labels && result.metadata.text_labels.length > 0;
+    const hasDoors = result.doors && result.doors.length > 0;
+    const hasRooms = allRooms.length > 0;
+    const hasDoorsAndInteractive = (hasDoors || hasTextLabels || hasRooms) && jobId;
 
     return (
       <div className="space-y-4">
@@ -145,7 +156,14 @@ export default function ResultsViewer({ result, blueprintImage, jobId }: Results
                   📊 View Results
                 </button>
                 <button
-                  onClick={() => setViewMode('interactive')}
+                  onClick={() => {
+                    // Show warning if there are detected rooms
+                    if (viewMode === 'static' && (result.rooms?.length || 0) > 0) {
+                      setShowInteractiveModeWarning(true);
+                    } else {
+                      setViewMode('interactive');
+                    }
+                  }}
                   className={`px-4 py-2 rounded transition-colors ${
                     viewMode === 'interactive'
                       ? 'bg-blue-600 text-white'
@@ -162,11 +180,11 @@ export default function ResultsViewer({ result, blueprintImage, jobId }: Results
             <div className="h-[600px] border border-gray-300 rounded-lg overflow-hidden">
               <InteractiveEditor
                 jobId={jobId}
-                rooms={result.rooms || []}
+                rooms={[]}
                 doors={result.doors || []}
                 blueprintImage={blueprintImage || ''}
-                initialExtendedRooms={result.extended_rooms || []}
-                initialModifiedRooms={result.modified_rooms || []}
+                initialExtendedRooms={[]}
+                initialModifiedRooms={[]}
                 onExtendedRoomsChange={setExtendedRooms}
               />
             </div>
@@ -183,14 +201,29 @@ export default function ResultsViewer({ result, blueprintImage, jobId }: Results
               )}
 
               <div className="space-y-2">
-                <p className="text-sm text-gray-600">
-                  <span className="font-medium">Rooms detected:</span> {result.rooms.length}
+                <p className="text-sm text-gray-900 font-semibold">
+                  <span className="font-bold">Total rooms:</span> {allRooms.length}
                 </p>
-                {extendedRooms.length > 0 && (
-                  <p className="text-sm text-green-600">
-                    <span className="font-medium">Extended rooms:</span> {extendedRooms.length}
+                <div className="pl-4 space-y-1">
+                  <p className="text-sm text-gray-600">
+                    <span className="font-medium">Detected:</span> {result.rooms?.length || 0}
                   </p>
-                )}
+                  {(result.extended_rooms?.length || 0) > 0 && (
+                    <p className="text-sm text-green-600">
+                      <span className="font-medium">Extended (from backend):</span> {result.extended_rooms?.length || 0}
+                    </p>
+                  )}
+                  {(result.modified_rooms?.length || 0) > 0 && (
+                    <p className="text-sm text-blue-600">
+                      <span className="font-medium">Modified:</span> {result.modified_rooms?.length || 0}
+                    </p>
+                  )}
+                  {extendedRooms.length > 0 && (
+                    <p className="text-sm text-green-600">
+                      <span className="font-medium">Extended (interactive):</span> {extendedRooms.length}
+                    </p>
+                  )}
+                </div>
                 {result.doors && result.doors.length > 0 && (
                   <p className="text-sm text-gray-600">
                     <span className="font-medium">Doors detected:</span> {result.doors.length}
@@ -221,42 +254,63 @@ export default function ResultsViewer({ result, blueprintImage, jobId }: Results
                 )}
               </div>
 
-              <div className="mt-4 space-y-2 max-h-64 overflow-y-auto">
-                {allRooms.map((room: Room) => (
-                  <div
-                    key={room.id}
-                    className={`border rounded p-3 text-sm ${
-                      room.is_extended
-                        ? 'bg-green-50 border-green-200'
-                        : 'bg-gray-50 border-gray-200'
-                    }`}
-                  >
-                    <div className="flex justify-between items-start">
-                      <div>
-                        <p className="font-medium text-gray-800">
-                          {room.name_hint || room.id}
-                          {room.is_extended && (
-                            <span className="ml-2 text-xs text-green-600 font-semibold">
-                              [Extended]
-                            </span>
-                          )}
-                        </p>
-                        <p className="text-gray-600 text-xs mt-1">
-                          {room.polygon
-                            ? `Polygon: ${room.polygon.length} points`
-                            : `BBox: [${room.bounding_box.join(', ')}]`}
-                        </p>
-                      </div>
-                      <div className="text-right">
-                        {room.confidence !== undefined && (
-                          <p className="text-green-600 font-medium">
-                            {(room.confidence * 100).toFixed(0)}%
+              {/* Master Room List */}
+              <div className="mt-6">
+                <h4 className="font-semibold text-gray-900 mb-3 flex items-center gap-2">
+                  <span>📋</span>
+                  <span>Room List</span>
+                  <span className="text-sm font-normal text-gray-500">
+                    ({allRooms.length} {allRooms.length === 1 ? 'room' : 'rooms'})
+                  </span>
+                </h4>
+                <div className="space-y-2 max-h-96 overflow-y-auto border border-gray-200 rounded-lg p-3 bg-gray-50">
+                  {allRooms.map((room: Room, index: number) => (
+                    <div
+                      key={room.id}
+                      className={`border rounded-lg p-3 text-sm transition-colors ${
+                        room.is_extended
+                          ? 'bg-green-50 border-green-300 hover:bg-green-100'
+                          : 'bg-white border-gray-300 hover:bg-gray-50'
+                      }`}
+                    >
+                      <div className="flex justify-between items-start">
+                        <div className="flex-1">
+                          <div className="flex items-center gap-2">
+                            <span className="text-gray-500 font-mono text-xs">#{index + 1}</span>
+                            <p className="font-semibold text-gray-900">
+                              {room.name_hint || room.id}
+                            </p>
+                            {room.is_extended && (
+                              <span className="px-2 py-0.5 text-xs text-green-700 bg-green-200 rounded-full font-medium">
+                                Extended
+                              </span>
+                            )}
+                            {room.is_modified && (
+                              <span className="px-2 py-0.5 text-xs text-blue-700 bg-blue-200 rounded-full font-medium">
+                                Modified
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-gray-600 text-xs mt-1.5">
+                            {room.polygon
+                              ? `Polygon: ${room.polygon.length} vertices`
+                              : `Bounding Box: [${room.bounding_box.map(n => Math.round(n)).join(', ')}]`}
                           </p>
-                        )}
+                        </div>
+                        <div className="text-right ml-3">
+                          {room.confidence !== undefined && (
+                            <div className="flex flex-col items-end">
+                              <p className="text-green-600 font-semibold text-base">
+                                {(room.confidence * 100).toFixed(0)}%
+                              </p>
+                              <p className="text-xs text-gray-500">confidence</p>
+                            </div>
+                          )}
+                        </div>
                       </div>
                     </div>
-                  </div>
-                ))}
+                  ))}
+                </div>
               </div>
             </>
           )}
@@ -276,6 +330,53 @@ export default function ResultsViewer({ result, blueprintImage, jobId }: Results
                 2
               )}
             </pre>
+          </div>
+        )}
+
+        {/* Warning Modal for Interactive Mode */}
+        {showInteractiveModeWarning && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+            <div className="bg-white rounded-lg shadow-2xl p-6 max-w-md w-full mx-4">
+              <div className="flex items-start gap-3 mb-4">
+                <span className="text-3xl">⚠️</span>
+                <div>
+                  <h3 className="text-lg font-semibold text-gray-900 mb-2">
+                    Switch to Interactive Mode?
+                  </h3>
+                  <p className="text-sm text-gray-700 mb-3">
+                    Entering Interactive Mode will <strong>reset and delete all automatically detected rooms</strong>.
+                  </p>
+                  <p className="text-sm text-gray-700 mb-3">
+                    You will need to generate rooms manually using the text labels on the blueprint.
+                  </p>
+                  <div className="bg-blue-50 border border-blue-200 rounded p-3 text-sm text-blue-800">
+                    <strong>What you'll keep:</strong>
+                    <ul className="list-disc ml-4 mt-1">
+                      <li>Text labels from the blueprint</li>
+                      <li>Doors (if detected)</li>
+                      <li>Ability to add manual labels</li>
+                    </ul>
+                  </div>
+                </div>
+              </div>
+              <div className="flex gap-2 justify-end">
+                <button
+                  onClick={() => setShowInteractiveModeWarning(false)}
+                  className="px-4 py-2 text-gray-700 bg-gray-100 rounded-md hover:bg-gray-200 transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={() => {
+                    setShowInteractiveModeWarning(false);
+                    setViewMode('interactive');
+                  }}
+                  className="px-4 py-2 bg-orange-600 text-white rounded-md hover:bg-orange-700 transition-colors font-medium"
+                >
+                  Continue to Interactive Mode
+                </button>
+              </div>
+            </div>
           </div>
         )}
       </div>

@@ -8,14 +8,14 @@ interface ExportPanelProps {
 export default function ExportPanel({ jobId }: ExportPanelProps) {
   const [exporting, setExporting] = useState(false);
 
-  const handleExport = async (format: 'json' | 'svg') => {
+  const handleExport = async () => {
     setExporting(true);
     try {
-      const blob = await exportResults(jobId, format);
+      const blob = await exportResults(jobId, 'json');
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `blueprint_${jobId}.${format}`;
+      a.download = `blueprint_${jobId}.json`;
       document.body.appendChild(a);
       a.click();
       window.URL.revokeObjectURL(url);
@@ -30,22 +30,13 @@ export default function ExportPanel({ jobId }: ExportPanelProps) {
   return (
     <div className="bg-white border border-gray-200 rounded-lg p-4">
       <h3 className="font-semibold mb-3">Export Results</h3>
-      <div className="flex gap-2">
-        <button
-          onClick={() => handleExport('json')}
-          disabled={exporting}
-          className="flex-1 bg-blue-600 text-white py-2 px-4 rounded-lg hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors text-sm"
-        >
-          {exporting ? 'Exporting...' : 'Export JSON'}
-        </button>
-        <button
-          onClick={() => handleExport('svg')}
-          disabled={exporting}
-          className="flex-1 bg-green-600 text-white py-2 px-4 rounded-lg hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors text-sm"
-        >
-          {exporting ? 'Exporting...' : 'Export SVG'}
-        </button>
-      </div>
+      <button
+        onClick={handleExport}
+        disabled={exporting}
+        className="w-full bg-blue-600 text-white py-2 px-4 rounded-lg hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors text-sm"
+      >
+        {exporting ? 'Exporting...' : 'Export JSON'}
+      </button>
     </div>
   );
 }

@@ -34,17 +34,19 @@ def extract_text_labels_from_blueprint(image_base64: str, image_format: str = 'p
         # Build prompt for text extraction with comprehensive room name list
         prompt = """Analyze this architectural blueprint and extract ALL text labels that identify rooms or spaces.
 
-Focus on common American and British English room names:
-- Living Room, Family Room, Great Room, Den
+Extract ANY room or space label including but not limited to:
+- Living Room, Family Room, Great Room, Den, Lounge
 - Master Bedroom, Bedroom, Guest Bedroom, Children's Bedroom
-- Kitchen, Dining Room, Breakfast Nook
-- Bathroom, Master Bathroom, Ensuite, Powder Room, Half Bath
+- Kitchen, Dining Room, Breakfast Nook, Kitchenette
+- Bathroom, Master Bathroom, Ensuite, Powder Room, Half Bath, WC, Toilet, Restroom
 - Office, Study, Library, Home Office
-- Laundry Room, Utility Room, Mud Room
-- Closet, Walk-in Closet, Pantry, Storage
-- Garage, Workshop, Basement, Attic
-- Hallway, Corridor, Foyer, Entry
-- Any other room or space labels
+- Laundry Room, Utility Room, Mud Room, Laundry
+- Closet, Walk-in Closet, Pantry, Storage, Wardrobe
+- Garage, Workshop, Basement, Attic, Cellar
+- Hallway, Corridor, Foyer, Entry, Entrance
+- Sauna, Steam Room, Spa, Gym, Exercise Room
+- Balcony, Terrace, Patio, Deck, Porch
+- Any other room or space labels in ANY language (including abbreviations like WC, BR, etc.)
 
 IGNORE:
 - Dimension numbers (e.g., "12'", "10.5")
@@ -129,25 +131,20 @@ Extract ALL room labels, not just obvious ones."""
             image = Image.open(BytesIO(image_data))
             image_width, image_height = image.size
             
-            # Normalize text label coordinates to 0-1000 range to match room coordinates
-            from config import COORDINATE_MAX
+            # Keep coordinates in actual image pixel space (don't normalize)
+            # Frontend will use them directly since they match the displayed image
             normalized_labels = []
             for label in text_labels:
                 bbox = label.get('bbox', [])
                 if len(bbox) == 4:
                     x_min, y_min, x_max, y_max = bbox
-                    # Normalize to 0-1000 range
-                    norm_x_min = (x_min / image_width) * COORDINATE_MAX
-                    norm_y_min = (y_min / image_height) * COORDINATE_MAX
-                    norm_x_max = (x_max / image_width) * COORDINATE_MAX
-                    norm_y_max = (y_max / image_height) * COORDINATE_MAX
-                    
+                    # Clamp to image bounds but keep in pixel space
                     normalized_label = label.copy()
                     normalized_label['bbox'] = [
-                        max(0, min(COORDINATE_MAX, norm_x_min)),
-                        max(0, min(COORDINATE_MAX, norm_y_min)),
-                        max(0, min(COORDINATE_MAX, norm_x_max)),
-                        max(0, min(COORDINATE_MAX, norm_y_max))
+                        max(0, min(image_width, x_min)),
+                        max(0, min(image_height, y_min)),
+                        max(0, min(image_width, x_max)),
+                        max(0, min(image_height, y_max))
                     ]
                     normalized_labels.append(normalized_label)
                 else:
@@ -456,16 +453,16 @@ def filter_room_labels(text_labels: List[Dict[str, Any]]) -> List[Dict[str, Any]
     room_terms = {
         'living room', 'family room', 'great room', 'den', 'lounge',
         'master bedroom', 'bedroom', 'guest bedroom', "children's bedroom", 'kids bedroom',
-        'kitchen', 'dining room', 'breakfast nook', 'dining',
-        'bathroom', 'master bathroom', 'ensuite', 'powder room', 'half bath', 'wc',
+        'kitchen', 'dining room', 'breakfast nook', 'dining', 'kitchenette',
+        'bathroom', 'master bathroom', 'ensuite', 'powder room', 'half bath', 'wc', 'toilet', 'restroom',
         'office', 'study', 'library', 'home office',
-        'laundry room', 'utility room', 'mud room', 'mudroom',
-        'closet', 'walk-in closet', 'walk in closet', 'pantry', 'storage',
-        'garage', 'workshop', 'basement', 'attic',
+        'laundry room', 'utility room', 'mud room', 'mudroom', 'laundry',
+        'closet', 'walk-in closet', 'walk in closet', 'pantry', 'storage', 'wardrobe',
+        'garage', 'workshop', 'basement', 'attic', 'cellar',
         'hallway', 'corridor', 'foyer', 'entry', 'entrance',
-        'balcony', 'patio', 'deck', 'porch',
+        'balcony', 'terrace', 'patio', 'deck', 'porch',
         'game room', 'playroom', 'media room', 'theater', 'theatre',
-        'gym', 'exercise room', 'fitness room'
+        'sauna', 'steam room', 'spa', 'gym', 'exercise room', 'fitness room'
     }
     
     filtered_labels = []

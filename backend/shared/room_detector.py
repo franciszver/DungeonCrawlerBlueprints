@@ -21,7 +21,7 @@ from text_extractor import (
     add_numerical_differentiators,
     filter_room_labels
 )
-from config import ENABLE_TEXT_EXTRACTION, ENABLE_AUTO_EDGE_REFINEMENT, MAX_PROCESSING_TIME_SECONDS
+from config import ENABLE_ROOM_DETECTION, ENABLE_TEXT_EXTRACTION, ENABLE_AUTO_EDGE_REFINEMENT, MAX_PROCESSING_TIME_SECONDS
 
 
 def process_blueprint_image(image_data: bytes, image_format: str = 'png') -> Dict[str, Any]:
@@ -53,31 +53,6 @@ def process_blueprint_image(image_data: bytes, image_format: str = 'png') -> Dic
         # Convert image to base64
         image_base64 = base64.b64encode(image_data).decode('utf-8')
         
-        # Load few-shot training examples
-        training_loader = get_training_data_loader()
-        few_shot_examples = training_loader.get_few_shot_examples()
-        
-        if few_shot_examples:
-            print(f"Using {len(few_shot_examples)} few-shot training examples")
-        
-        # Detect rooms using multi-model validation
-        detection_result = detect_rooms_with_validation(
-            image_base64, 
-            image_format,
-            few_shot_examples=few_shot_examples
-        )
-        
-        if not detection_result.get("success", False):
-            return {
-                **detection_result,
-                "processing_time_ms": int((time.time() - start_time) * 1000),
-                "image_dimensions": {"width": actual_image_width, "height": actual_image_height}
-            }
-        
-        rooms = detection_result.get("rooms", [])
-        doors = detection_result.get("doors", [])
-        detection_metadata = detection_result.get("detection_metadata", {})
-        
         # Get actual image dimensions for normalization
         try:
             from PIL import Image
@@ -88,24 +63,95 @@ def process_blueprint_image(image_data: bytes, image_format: str = 'png') -> Dic
             # Fallback to 1000x1000 if we can't determine size
             actual_image_width, actual_image_height = 1000, 1000
         
-        # Normalize coordinates if they're in pixel space
-        if rooms:
-            sample_bbox = rooms[0].get('bounding_box', [])
-            if sample_bbox and max(sample_bbox) > 1000:
-                # Coordinates are in pixel space, normalize them using actual image dimensions
-                rooms = normalize_coordinates(rooms, actual_image_width, actual_image_height)
-        
-        # Validate detection results
-        rooms, validation_results = validate_and_enhance_detection(rooms, doors, image_base64)
+        # Skip automatic room detection if disabled
+        if not ENABLE_ROOM_DETECTION:
+            print("Automatic room detection disabled - users will manually generate rooms")
+            rooms = []
+            doors = []
+            detection_metadata = {
+                "models_used": [],
+                "retry_count": 0,
+                "primary_confidence": 0.0,
+                "final_confidence": 0.0,
+                "detection_type": "manual",
+                "primary_model": "disabled"
+            }
+            few_shot_examples = None
+            detection_result = {"confidence": 0.0}
+            # Initialize validation_results for when room detection is disabled
+            validation_results = {
+                "coverage_score": 0.0,
+                "validation_passed": False,
+                "warnings": [],
+                "needs_retry": False
+            }
+        else:
+            # Load few-shot training examples
+            training_loader = get_training_data_loader()
+            few_shot_examples = training_loader.get_few_shot_examples()
+            
+            if few_shot_examples:
+                print(f"Using {len(few_shot_examples)} few-shot training examples")
+            
+            # Detect rooms using multi-model validation
+            detection_result = detect_rooms_with_validation(
+                image_base64, 
+                image_format,
+                few_shot_examples=few_shot_examples
+            )
+            
+            if not detection_result.get("success", False):
+                return {
+                    **detection_result,
+                    "processing_time_ms": int((time.time() - start_time) * 1000),
+                    "image_dimensions": {"width": actual_image_width, "height": actual_image_height}
+                }
+            
+            rooms = detection_result.get("rooms", [])
+            doors = detection_result.get("doors", [])
+            detection_metadata = detection_result.get("detection_metadata", {})
+            
+            # Normalize coordinates if they're in pixel space
+            if rooms:
+                sample_bbox = rooms[0].get('bounding_box', [])
+                if sample_bbox and max(sample_bbox) > 1000:
+                    # Coordinates are in pixel space, normalize them using actual image dimensions
+                    rooms = normalize_coordinates(rooms, actual_image_width, actual_image_height)
+            
+            # Validate detection results
+            rooms, validation_results = validate_and_enhance_detection(rooms, doors, image_base64)
         
         # Track time after detection to see how much time remains for refinement steps
         detection_time = time.time() - start_time
         time_remaining = MAX_PROCESSING_TIME_SECONDS - detection_time
         
-        # Extract text labels from blueprint and match to rooms (with timeout and time check)
+        # Extract text labels from blueprint (always extract if room detection is disabled, or if enabled and time permits)
         text_labels = []
         
-        if ENABLE_TEXT_EXTRACTION and rooms and image_base64 and time_remaining > 8:
+        # If room detection is disabled, always try to extract text labels (users need them to generate rooms)
+        if not ENABLE_ROOM_DETECTION:
+            if ENABLE_TEXT_EXTRACTION and image_base64:
+                try:
+                    print(f"Extracting text labels from blueprint (room detection disabled, users will generate manually)...")
+                    raw_text_labels = extract_text_labels_from_blueprint(image_base64, image_format)
+                    if raw_text_labels:
+                        # Filter to only room labels
+                        text_labels = filter_room_labels(raw_text_labels)
+                        # Add numerical differentiators for duplicates
+                        text_labels = add_numerical_differentiators(text_labels)
+                        print(f"Extracted {len(text_labels)} room labels for manual generation")
+                    else:
+                        text_labels = []
+                except requests.Timeout:
+                    print("Text extraction timed out (non-fatal), continuing without text labels")
+                    text_labels = []
+                except Exception as e:
+                    print(f"Text extraction failed (non-fatal): {str(e)}")
+                    text_labels = []
+            elif not ENABLE_TEXT_EXTRACTION:
+                print("Text extraction disabled (ENABLE_TEXT_EXTRACTION=false)")
+                text_labels = []
+        elif ENABLE_TEXT_EXTRACTION and rooms and image_base64 and time_remaining > 8:
             try:
                 print(f"Extracting text labels from blueprint (time remaining: {time_remaining:.1f}s)...")
                 # Use a faster model and shorter timeout for text extraction
@@ -134,27 +180,28 @@ def process_blueprint_image(image_data: bytes, image_format: str = 'png') -> Dic
             print(f"Skipping text extraction (insufficient time remaining: {time_remaining:.1f}s)")
             text_labels = []
         
-        # Automatically refine room boundaries to match blueprint using edge detection
-        elapsed_time = time.time() - start_time
-        time_remaining = MAX_PROCESSING_TIME_SECONDS - elapsed_time
+        # Automatically refine room boundaries to match blueprint using edge detection (skip if room detection disabled)
+        if ENABLE_ROOM_DETECTION:
+            elapsed_time = time.time() - start_time
+            time_remaining = MAX_PROCESSING_TIME_SECONDS - elapsed_time
+            
+            if ENABLE_AUTO_EDGE_REFINEMENT and rooms and image_base64 and time_remaining > 5:
+                try:
+                    print(f"Automatically refining room boundaries (time remaining: {time_remaining:.1f}s)...")
+                    refinement_result = refine_room_boundaries(image_base64, rooms, threshold=25, image_format=image_format)
+                    if refinement_result.get('success') and refinement_result.get('refined_rooms'):
+                        rooms = refinement_result['refined_rooms']
+                        print(f"Refined {refinement_result.get('stats', {}).get('refined_rooms', 0)} room(s) to match blueprint boundaries")
+                except Exception as e:
+                    print(f"Edge detection refinement failed (non-fatal): {str(e)}")
+                    # Continue with original rooms if refinement fails
+            elif not ENABLE_AUTO_EDGE_REFINEMENT:
+                print("Edge refinement disabled (ENABLE_AUTO_EDGE_REFINEMENT=false)")
+            elif time_remaining <= 5:
+                print(f"Skipping edge refinement (insufficient time remaining: {time_remaining:.1f}s)")
         
-        if ENABLE_AUTO_EDGE_REFINEMENT and rooms and image_base64 and time_remaining > 5:
-            try:
-                print(f"Automatically refining room boundaries (time remaining: {time_remaining:.1f}s)...")
-                refinement_result = refine_room_boundaries(image_base64, rooms, threshold=25, image_format=image_format)
-                if refinement_result.get('success') and refinement_result.get('refined_rooms'):
-                    rooms = refinement_result['refined_rooms']
-                    print(f"Refined {refinement_result.get('stats', {}).get('refined_rooms', 0)} room(s) to match blueprint boundaries")
-            except Exception as e:
-                print(f"Edge detection refinement failed (non-fatal): {str(e)}")
-                # Continue with original rooms if refinement fails
-        elif not ENABLE_AUTO_EDGE_REFINEMENT:
-            print("Edge refinement disabled (ENABLE_AUTO_EDGE_REFINEMENT=false)")
-        elif time_remaining <= 5:
-            print(f"Skipping edge refinement (insufficient time remaining: {time_remaining:.1f}s)")
-        
-        # If validation fails and we haven't retried yet, retry with strict mode
-        if should_retry_with_strict_mode(validation_results) and detection_metadata.get("retry_count", 0) == 0:
+        # If validation fails and we haven't retried yet, retry with strict mode (skip if room detection disabled)
+        if ENABLE_ROOM_DETECTION and should_retry_with_strict_mode(validation_results) and detection_metadata.get("retry_count", 0) == 0:
             print("Validation failed, retrying with strict mode...")
             
             # Retry detection with strict mode enabled
@@ -241,7 +288,7 @@ def process_blueprint_image(image_data: bytes, image_format: str = 'png') -> Dic
             "doors": doors,
             "confidence": detection_result.get("confidence", 0.0),
             "processing_time_ms": processing_time_ms,
-            "image_dimensions": {"width": 1000, "height": 1000},
+            "image_dimensions": {"width": actual_image_width, "height": actual_image_height},
             "metadata": metadata
         }
         

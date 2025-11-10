@@ -4,12 +4,11 @@ import RoomSuggestionPanel from './RoomSuggestionPanel';
 import RoomLabelPanel from './RoomLabelPanel';
 import Minimap from './Minimap';
 import { useRoomExtension } from '../hooks/useRoomExtension';
-import { useUndoRedo, createAddAction, createModifyAction } from '../hooks/useUndoRedo';
+import { useUndoRedo, createAddAction, createModifyAction, createDeleteAction } from '../hooks/useUndoRedo';
 import { useCanvasInteraction } from '../hooks/useCanvasInteraction';
 import { useZoomPan } from '../hooks/useZoomPan';
 import { findNearestEdge, calculateEdgeDirection } from '../utils/geometryHelpers';
 import { updatePlan, refineRoomBoundaries, getResults } from '../services/api';
-import { validateRoomSizes, type SizeWarning } from '../utils/roomValidator';
 import type { Room, Door, HistoryAction } from '../types';
 
 interface InteractiveEditorProps {
@@ -38,14 +37,18 @@ export default function InteractiveEditor({
   const [isRefining, setIsRefining] = useState(false);
   const [refineError, setRefineError] = useState<string | null>(null);
   const [refineSuccess, setRefineSuccess] = useState<string | null>(null);
-  const [sizeWarnings, setSizeWarnings] = useState<SizeWarning[]>([]);
-  const [dismissedWarnings, setDismissedWarnings] = useState<Set<string>>(new Set());
   const [minimapVisible, setMinimapVisible] = useState(false);
   const [imageDimensions, setImageDimensions] = useState({ width: 1000, height: 1000 });
   const [controlsMenuOpen, setControlsMenuOpen] = useState(false);
   const [textLabels, setTextLabels] = useState<any[]>([]);
   const [labelPanelCollapsed, setLabelPanelCollapsed] = useState(false);
   const [labelGenerationWarnings, setLabelGenerationWarnings] = useState<string[]>([]);
+  const [_generatingLabels, setGeneratingLabels] = useState<Set<number>>(new Set()); // Track labels being generated
+  const [draggingLabel, setDraggingLabel] = useState<number | null>(null);
+  const [labelOffsets, setLabelOffsets] = useState<Map<number, { x: number; y: number }>>(new Map());
+  const [labelDragStartPos, setLabelDragStartPos] = useState<{ x: number; y: number } | null>(null);
+  const [manualLabelFormOpen, setManualLabelFormOpen] = useState(false);
+  const [manualLabelName, setManualLabelName] = useState('');
   
   // Combine rooms: unmodified originals + modified originals + extended rooms
   const allRooms = [
@@ -54,15 +57,16 @@ export default function InteractiveEditor({
     ...extendedRooms
   ];
 
+  // Notify parent when extendedRooms changes (useEffect to avoid setState during render)
+  useEffect(() => {
+    onExtendedRoomsChange?.(extendedRooms);
+  }, [extendedRooms, onExtendedRoomsChange]);
+
   // Handle room added
   const handleRoomAdded = useCallback((room: Room) => {
-    setExtendedRooms(prev => {
-      const newRooms = [...prev, room];
-      onExtendedRoomsChange?.(newRooms);
-      return newRooms;
-    });
+    setExtendedRooms(prev => [...prev, room]);
     undoRedo.addAction(createAddAction(room));
-  }, [onExtendedRoomsChange]);
+  }, []);
 
   // Handle room modified
   const handleRoomModified = useCallback((updatedRoom: Room) => {
@@ -74,11 +78,7 @@ export default function InteractiveEditor({
     
     if (updatedRoom.is_extended) {
       // Extended room modification
-      setExtendedRooms(prev => {
-        const newRooms = prev.map(r => r.id === updatedRoom.id ? updatedRoom : r);
-        onExtendedRoomsChange?.(newRooms);
-        return newRooms;
-      });
+      setExtendedRooms(prev => prev.map(r => r.id === updatedRoom.id ? updatedRoom : r));
     } else if (isOriginalRoom) {
       // Original room modification - mark as modified and move to modifiedOriginalRooms
       const modifiedRoom = { ...updatedRoom, is_modified: true };
@@ -93,7 +93,7 @@ export default function InteractiveEditor({
     }
     
     undoRedo.addAction(createModifyAction(updatedRoom, previousRoom));
-  }, [allRooms, rooms, onExtendedRoomsChange]);
+  }, [allRooms, rooms]);
 
   // Undo/Redo handlers
   const handleUndo = useCallback((action: HistoryAction) => {
@@ -379,6 +379,20 @@ export default function InteractiveEditor({
     event.stopPropagation();
   }, [mode, canvas, modifiedOriginalRooms, undoRedo]);
 
+  // Handle room deletion (only for extended/generated rooms)
+  const handleRoomDelete = useCallback((roomId: string) => {
+    const room = allRooms.find(r => r.id === roomId);
+    if (!room || !room.is_extended) {
+      return; // Only allow deletion of generated rooms
+    }
+    
+    // Remove from extended rooms
+    setExtendedRooms(prev => prev.filter(r => r.id !== roomId));
+    
+    // Add to undo/redo
+    undoRedo.addAction(createDeleteAction(room));
+  }, [allRooms, undoRedo]);
+
   // Handle door deletion
   const handleDoorDelete = useCallback((doorId: string) => {
     // Find room(s) containing this door
@@ -440,11 +454,106 @@ export default function InteractiveEditor({
     }
   }, [jobId]);
 
+  // Handler for label dragging
+  const handleLabelDragStart = useCallback((labelIndex: number, event: React.MouseEvent) => {
+    event.stopPropagation();
+    setDraggingLabel(labelIndex);
+    setLabelDragStartPos({ x: event.clientX, y: event.clientY });
+  }, []);
+
+  const handleLabelDrag = useCallback((event: React.MouseEvent) => {
+    if (draggingLabel === null) return;
+    
+    const svgElement = zoomPan.svgRef.current;
+    if (!svgElement) return;
+    
+    // Use SVG's built-in coordinate transformation
+    const pt = svgElement.createSVGPoint();
+    pt.x = event.clientX;
+    pt.y = event.clientY;
+    
+    // Transform from screen coordinates to SVG coordinates
+    const svgP = pt.matrixTransform(svgElement.getScreenCTM()?.inverse());
+    
+    // Get original label position
+    const label = textLabels[draggingLabel];
+    if (!label) return;
+    
+    const [x_min, y_min, x_max, y_max] = label.bbox;
+    const originalX = (x_min + x_max) / 2;
+    const originalY = (y_min + y_max) / 2;
+    
+    // Calculate offset from original position
+    const offsetX = svgP.x - originalX;
+    const offsetY = svgP.y - originalY;
+    
+    setLabelOffsets(prev => {
+      const updated = new Map(prev);
+      updated.set(draggingLabel, { x: offsetX, y: offsetY });
+      return updated;
+    });
+  }, [draggingLabel, textLabels, zoomPan]);
+
+  const handleLabelDragEnd = useCallback(() => {
+    setDraggingLabel(null);
+    setLabelDragStartPos(null);
+  }, []);
+
+  // Handler for adding manual label - show form
+  const handleAddManualLabel = useCallback(() => {
+    setManualLabelFormOpen(true);
+    setManualLabelName('');
+  }, []);
+
+  // Handler for submitting manual label form
+  const handleSubmitManualLabel = useCallback(() => {
+    if (!manualLabelName.trim()) {
+      return; // Don't create empty labels
+    }
+
+    // Create label at center of image
+    const centerX = imageDimensions.width / 2;
+    const centerY = imageDimensions.height / 2;
+    
+    const newLabel = {
+      text: manualLabelName.trim(),
+      bbox: [centerX - 20, centerY - 10, centerX + 20, centerY + 10] as [number, number, number, number],
+      confidence: 1.0,
+      original_text: manualLabelName.trim(),
+      is_manual: true
+    };
+    
+    setTextLabels(prev => [...prev, newLabel]);
+    setManualLabelFormOpen(false);
+    setManualLabelName('');
+  }, [manualLabelName, imageDimensions]);
+
   // Handler for generating rooms from selected labels
   const handleGenerateFromLabels = useCallback(async (selectedIndices: number[]): Promise<void> => {
     setLabelGenerationWarnings([]);
     
+    // Track which labels are being generated (for UI feedback)
+    const newGenerating = new Set(selectedIndices);
+    setGeneratingLabels(newGenerating);
+    
     try {
+      // Prepare adjusted label positions
+      const adjustedLabelPositions: Record<number, { x: number; y: number }> = {};
+      selectedIndices.forEach(idx => {
+        const offset = labelOffsets.get(idx);
+        if (offset) {
+          adjustedLabelPositions[idx] = offset;
+        }
+      });
+      
+      // Include manual labels in the request (labels with is_manual flag)
+      const manualLabels: Record<number, any> = {};
+      selectedIndices.forEach(idx => {
+        if (idx < textLabels.length && textLabels[idx].is_manual) {
+          manualLabels[idx] = textLabels[idx];
+        }
+      });
+      
       const response = await fetch(`${import.meta.env.VITE_API_URL}/extend/${jobId}`, {
         method: 'POST',
         headers: {
@@ -454,6 +563,8 @@ export default function InteractiveEditor({
         body: JSON.stringify({
           action: 'generate-from-labels',
           selected_label_indices: selectedIndices,
+          label_position_adjustments: adjustedLabelPositions,
+          manual_labels: manualLabels,
         }),
       });
       
@@ -464,10 +575,16 @@ export default function InteractiveEditor({
       
       const data = await response.json();
       
+      // Stop generating indicator
+      setGeneratingLabels(prev => {
+        const updated = new Set(prev);
+        selectedIndices.forEach(idx => updated.delete(idx));
+        return updated;
+      });
+      
       // Update extended rooms
       if (data.extended_rooms) {
         setExtendedRooms(data.extended_rooms);
-        onExtendedRoomsChange?.(data.extended_rooms);
       }
       
       // Show warnings if any
@@ -475,52 +592,42 @@ export default function InteractiveEditor({
         setLabelGenerationWarnings(data.warnings);
       }
     } catch (error) {
+      // Stop generating indicator on error
+      setGeneratingLabels(prev => {
+        const updated = new Set(prev);
+        selectedIndices.forEach(idx => updated.delete(idx));
+        return updated;
+      });
+      
       console.error('Error generating rooms from labels:', error);
       setLabelGenerationWarnings([error instanceof Error ? error.message : 'Failed to generate rooms']);
       throw error; // Re-throw so panel can handle it
     }
-  }, [jobId, onExtendedRoomsChange]);
+  }, [jobId, textLabels, labelOffsets]);
 
   // Handler for generating all rooms from labels
   const handleGenerateAllFromLabels = useCallback(async (): Promise<void> => {
     setLabelGenerationWarnings([]);
     
-    try {
-      const response = await fetch(`${import.meta.env.VITE_API_URL}/extend/${jobId}`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': import.meta.env.VITE_API_KEY || '',
-        },
-        body: JSON.stringify({
-          action: 'generate-from-labels',
-          generate_all: true,
-        }),
-      });
-      
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || 'Failed to generate rooms');
-      }
-      
-      const data = await response.json();
-      
-      // Update extended rooms
-      if (data.extended_rooms) {
-        setExtendedRooms(data.extended_rooms);
-        onExtendedRoomsChange?.(data.extended_rooms);
-      }
-      
-      // Show warnings if any
-      if (data.warnings && data.warnings.length > 0) {
-        setLabelGenerationWarnings(data.warnings);
-      }
-    } catch (error) {
-      console.error('Error generating all rooms from labels:', error);
-      setLabelGenerationWarnings([error instanceof Error ? error.message : 'Failed to generate rooms']);
-      throw error; // Re-throw so panel can handle it
+    // Get all non-generated label indices
+    const generatedIndices = new Set(
+      allRooms
+        .filter(r => r.is_extended && (r as any).label_index !== undefined)
+        .map(r => (r as any).label_index)
+    );
+    // Only include non-manual labels (exclude labels with is_manual flag)
+    const allIndices = textLabels
+      .map((label, idx) => ({ label, idx }))
+      .filter(({ label, idx }) => !generatedIndices.has(idx) && !label.is_manual)
+      .map(({ idx }) => idx);
+    
+    if (allIndices.length === 0) {
+      return; // Nothing to generate
     }
-  }, [jobId, onExtendedRoomsChange]);
+    
+    // Use the same generation handler
+    await handleGenerateFromLabels(allIndices);
+  }, [allRooms, textLabels, handleGenerateFromLabels]);
 
   // Debounced persistence to backend
   const persistTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -552,30 +659,6 @@ export default function InteractiveEditor({
     }
   }, [modifiedOriginalRooms, extendedRooms, allDoors, persistToBackend]);
 
-  // Debounced size validation (2-3 seconds after edits)
-  const validationTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  
-  useEffect(() => {
-    if (validationTimeoutRef.current) {
-      clearTimeout(validationTimeoutRef.current);
-    }
-    
-    validationTimeoutRef.current = setTimeout(() => {
-      const warnings = validateRoomSizes(allRooms);
-      // Filter out dismissed warnings
-      const activeWarnings = warnings.filter(w => {
-        const warningKey = `${w.room1.id}-${w.type}-${w.room2?.id || ''}`;
-        return !dismissedWarnings.has(warningKey);
-      });
-      setSizeWarnings(activeWarnings);
-    }, 2500); // 2.5 seconds debounce
-    
-    return () => {
-      if (validationTimeoutRef.current) {
-        clearTimeout(validationTimeoutRef.current);
-      }
-    };
-  }, [allRooms, dismissedWarnings]);
 
   // Handle refine boundaries
   const handleRefineBoundaries = useCallback(async () => {
@@ -862,6 +945,22 @@ export default function InteractiveEditor({
         onMouseMove={canvas.handleMouseMove}
         onMouseUp={canvas.handleMouseUp}
         onDoorDelete={handleDoorDelete}
+        onRoomDelete={handleRoomDelete}
+        textLabels={textLabels}
+        onLabelClick={async (labelIndex) => {
+          // Generate room for clicked label
+          try {
+            await handleGenerateFromLabels([labelIndex]);
+          } catch (error) {
+            console.error('Error generating room from label click:', error);
+          }
+        }}
+        labelOffsets={labelOffsets}
+        onLabelDragStart={handleLabelDragStart}
+        onLabelDrag={handleLabelDrag}
+        onLabelDragEnd={handleLabelDragEnd}
+        draggingLabel={draggingLabel}
+        labelDragStartPos={labelDragStartPos}
         addDoorMode={mode === 'addDoor'}
         hoveredEdge={hoveredEdge}
         dragPreview={canvas.dragPreview}
@@ -876,19 +975,18 @@ export default function InteractiveEditor({
         onPanEnd={zoomPan.handlePanEnd}
       />
 
-      {/* Room Label Panel */}
-      {textLabels.length > 0 && (
-        <RoomLabelPanel
-          textLabels={textLabels}
-          existingRooms={rooms}
-          jobId={jobId}
-          onGenerate={handleGenerateFromLabels}
-          onGenerateAll={handleGenerateAllFromLabels}
-          isCollapsed={labelPanelCollapsed}
-          onToggleCollapse={() => setLabelPanelCollapsed(!labelPanelCollapsed)}
-          warnings={labelGenerationWarnings}
-        />
-      )}
+      {/* Room Label Panel - Always show so user can add manual labels */}
+      <RoomLabelPanel
+        textLabels={textLabels}
+        existingRooms={allRooms}
+        jobId={jobId}
+        onGenerate={handleGenerateFromLabels}
+        onGenerateAll={handleGenerateAllFromLabels}
+        isCollapsed={labelPanelCollapsed}
+        onToggleCollapse={() => setLabelPanelCollapsed(!labelPanelCollapsed)}
+        warnings={labelGenerationWarnings}
+        onAddManualLabel={handleAddManualLabel}
+      />
 
       {/* Room Suggestion Panel */}
       {roomExtension.selectedDoor && (
@@ -997,60 +1095,6 @@ export default function InteractiveEditor({
         />
       </div>
 
-      {/* Size Warnings Panel */}
-      {sizeWarnings.length > 0 && (
-        <div className="absolute top-4 right-4 z-10 bg-yellow-50 border border-yellow-400 rounded-lg shadow-lg p-3 max-w-sm">
-          <div className="flex items-center justify-between mb-2">
-            <h3 className="font-semibold text-sm text-yellow-800">
-              ⚠️ Size Warnings ({sizeWarnings.length})
-            </h3>
-            <button
-              onClick={() => setSizeWarnings([])}
-              className="text-xs text-yellow-600 hover:text-yellow-800"
-            >
-              Clear All
-            </button>
-          </div>
-          <div className="space-y-2 max-h-64 overflow-y-auto">
-            {sizeWarnings.map((warning, index) => {
-              const warningKey = `${warning.room1.id}-${warning.type}-${warning.room2?.id || ''}`;
-              return (
-                <div
-                  key={warningKey}
-                  className="bg-white rounded p-2 text-xs border border-yellow-300"
-                >
-                  <p className="text-yellow-800 mb-1">{warning.message}</p>
-                  <div className="flex gap-2 mt-1">
-                    <button
-                      onClick={() => {
-                        setDismissedWarnings(prev => new Set(prev).add(warningKey));
-                        setSizeWarnings(prev => prev.filter((_, i) => i !== index));
-                      }}
-                      className="text-yellow-600 hover:text-yellow-800 underline"
-                    >
-                      Dismiss
-                    </button>
-                    {warning.room2 && (
-                      <button
-                        onClick={() => {
-                          // Swap room types (simple implementation)
-                          const tempType = warning.room1.name_hint;
-                          handleRoomModified({ ...warning.room1, name_hint: warning.room2!.name_hint });
-                          handleRoomModified({ ...warning.room2!, name_hint: tempType });
-                        }}
-                        className="text-yellow-600 hover:text-yellow-800 underline"
-                      >
-                        Swap Types
-                      </button>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
-
       {/* Help Text - Positioned on right to avoid overlapping with legend */}
       <div className="absolute bottom-4 right-4 bg-white rounded-lg shadow-lg p-3 text-sm text-gray-600 max-w-xs z-10">
         <p className="font-semibold mb-1">💡 Interactive Mode Active</p>
@@ -1063,6 +1107,58 @@ export default function InteractiveEditor({
           <li>• Use Ctrl+Z / Ctrl+Y to undo/redo</li>
         </ul>
       </div>
+
+      {/* Manual Label Form Modal */}
+      {manualLabelFormOpen && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-2xl p-6 max-w-md w-full mx-4">
+            <h3 className="text-lg font-semibold mb-4">Add Manual Label</h3>
+            <div className="mb-4">
+              <label htmlFor="label-name" className="block text-sm font-medium text-gray-700 mb-2">
+                Label Name
+              </label>
+              <input
+                id="label-name"
+                type="text"
+                value={manualLabelName}
+                onChange={(e) => setManualLabelName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    handleSubmitManualLabel();
+                  } else if (e.key === 'Escape') {
+                    setManualLabelFormOpen(false);
+                    setManualLabelName('');
+                  }
+                }}
+                placeholder="e.g., Kitchen, Bedroom, etc."
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                autoFocus
+              />
+              <p className="mt-2 text-xs text-gray-500">
+                The label will be created at the center of the image and can be dragged to the desired location.
+              </p>
+            </div>
+            <div className="flex gap-2 justify-end">
+              <button
+                onClick={() => {
+                  setManualLabelFormOpen(false);
+                  setManualLabelName('');
+                }}
+                className="px-4 py-2 text-gray-700 bg-gray-100 rounded-md hover:bg-gray-200 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleSubmitManualLabel}
+                disabled={!manualLabelName.trim()}
+                className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
+              >
+                Create Label
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
