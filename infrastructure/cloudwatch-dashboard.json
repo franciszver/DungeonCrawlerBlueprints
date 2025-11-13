@@ -10,7 +10,7 @@
         ],
         "period": 300,
         "stat": "Sum",
-        "region": "us-east-1",
+        "region": "us-east-2",
         "title": "Lambda Functions Overview",
         "view": "timeSeries"
       }
@@ -25,7 +25,7 @@
         ],
         "period": 300,
         "stat": "Sum",
-        "region": "us-east-1",
+        "region": "us-east-2",
         "title": "Upload Function",
         "view": "timeSeries"
       }
@@ -40,7 +40,7 @@
         ],
         "period": 300,
         "stat": "Sum",
-        "region": "us-east-1",
+        "region": "us-east-2",
         "title": "Detect Function",
         "view": "timeSeries"
       }
@@ -55,7 +55,7 @@
         ],
         "period": 300,
         "stat": "Sum",
-        "region": "us-east-1",
+        "region": "us-east-2",
         "title": "Refine Function",
         "view": "timeSeries"
       }
@@ -71,7 +71,7 @@
         ],
         "period": 300,
         "stat": "Sum",
-        "region": "us-east-1",
+        "region": "us-east-2",
         "title": "API Gateway Metrics",
         "view": "timeSeries"
       }
@@ -85,7 +85,7 @@
         ],
         "period": 300,
         "stat": "Sum",
-        "region": "us-east-1",
+        "region": "us-east-2",
         "title": "DynamoDB Jobs Table",
         "view": "timeSeries"
       }
@@ -99,7 +99,7 @@
         ],
         "period": 300,
         "stat": "Sum",
-        "region": "us-east-1",
+        "region": "us-east-2",
         "title": "DynamoDB Cache Table",
         "view": "timeSeries"
       }
@@ -113,7 +113,7 @@
         ],
         "period": 86400,
         "stat": "Average",
-        "region": "us-east-1",
+        "region": "us-east-2",
         "title": "S3 Bucket Metrics",
         "view": "timeSeries"
       }

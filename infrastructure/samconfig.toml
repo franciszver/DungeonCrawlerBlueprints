@@ -15,7 +15,7 @@ lint = true
 capabilities = "CAPABILITY_IAM"
 confirm_changeset = true
 resolve_s3 = true
-region = "us-east-1"
+region = "us-east-2"
 image_repositories = []
 
 [default.package.parameters]

@@ -134,7 +134,7 @@ Resources:
   BlueprintsBucket:
     Type: AWS::S3::Bucket
     Properties:
-      BucketName: !Sub '${AWS::StackName}-blueprints-${AWS::AccountId}'
+      # BucketName removed to allow auto-generated unique names per region
       LifecycleConfiguration:
         Rules:
           - Id: DeleteOldBlueprints
