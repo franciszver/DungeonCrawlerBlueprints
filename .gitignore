@@ -138,3 +138,4 @@ scripts/
 
 # Training data (local cache - should be in S3)
 training_data_local/
+infrastructure/env.json

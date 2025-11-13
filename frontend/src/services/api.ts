@@ -55,9 +55,8 @@ export const detectRooms = async (
   if (response.status === 202) {
     const asyncJobId = response.data.job_id;
     
-    // Poll every 2 seconds for up to 6 minutes (to allow for complex blueprints + validation retry)
-    // Increased from 3 minutes to handle longer processing times
-    const maxAttempts = 180; // 180 attempts * 2 seconds = 6 minutes
+    // Poll every 2 seconds for up to 40 seconds
+    const maxAttempts = 20; // 20 attempts * 2 seconds = 40 seconds
     let attempts = 0;
     
     while (attempts < maxAttempts) {
@@ -79,21 +78,26 @@ export const detectRooms = async (
         } else if (result.status === 'failed') {
           throw new Error(result.error || 'Detection failed');
         }
-        // Continue polling if status is 'processing'
+        // Continue polling if status is 'processing' or 'uploaded'
+        // Safety check: if we've reached max attempts, stop polling
+        if (attempts >= maxAttempts) {
+          throw new Error(`Detection is taking longer than expected (${maxAttempts * 2} seconds). Your job ID is ${asyncJobId} - you can check results manually using the "Check Results" button.`);
+        }
       } catch (error: any) {
+        // If we've reached max attempts, always throw the timeout error
+        if (attempts >= maxAttempts) {
+          throw new Error(`Detection timeout after ${maxAttempts * 2} seconds. Your job ID is ${asyncJobId} - please use the "Check Results" button to check if processing completed.`);
+        }
         // Only log errors that aren't "not found" (job might not be ready yet)
         if (error.response?.status !== 404) {
           console.log(`Polling attempt ${attempts} error:`, error);
         }
-        // Continue polling on errors (job might not be ready yet)
-        if (attempts >= maxAttempts) {
-          // Return a processing result so user can manually check later
-          throw new Error(`Detection is taking longer than expected (${Math.floor(maxAttempts * 2 / 60)} minutes). Your job ID is ${asyncJobId} - you can check results manually using the "Check Results" button.`);
-        }
+        // Continue polling on errors (job might not be ready yet) - but only if we haven't hit max attempts
       }
     }
     
-    throw new Error(`Detection timeout after ${Math.floor(maxAttempts * 2 / 60)} minutes. Your job ID is ${asyncJobId} - please use the "Check Results" button to check if processing completed.`);
+    // This should never be reached due to the checks above, but keep as safety
+    throw new Error(`Detection timeout after ${maxAttempts * 2} seconds. Your job ID is ${asyncJobId} - please use the "Check Results" button to check if processing completed.`);
   }
 
   return response.data;
